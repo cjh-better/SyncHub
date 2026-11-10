@@ -609,7 +609,7 @@ class SyncHubHandler(BaseHTTPRequestHandler):
         cur = conn.cursor()
         cur.execute(
             "SELECT * FROM HistoryRecords WHERE IsDeleted = 0 "
-            "ORDER BY Pinned DESC, ID DESC LIMIT ?",
+            "ORDER BY Pinned DESC, Stared DESC, ID DESC LIMIT ?",
             (limit,)
         )
         rows = cur.fetchall()
@@ -1968,7 +1968,8 @@ async function api(url, opts) {
 const postJSON = (url, body) => api(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 
 function stamp(it) { it._t = Date.now(); return it; }
-function sortItems() { S.items.sort((a, b) => (b.pinned - a.pinned) || (b.id - a.id)); }
+// 置顶在最前，其次是收藏，其余在后；每组内按时间从新到旧（既置顶又收藏的算置顶）
+function sortItems() { S.items.sort((a, b) => (!!b.pinned - !!a.pinned) || (!!b.starred - !!a.starred) || (b.id - a.id)); }
 function upsert(it) {
   stamp(it);
   const i = S.items.findIndex(x => x.id === it.id);
