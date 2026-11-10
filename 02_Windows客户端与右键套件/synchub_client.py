@@ -23,15 +23,23 @@ import urllib.error
 import http.client
 import subprocess
 import threading
+import re
+import sqlite3
 
-SERVER_HOST = os.environ.get("SYNCHUB_SERVER_HOST", "020814.xyz")
+SERVER_HOST = "020814.xyz"
 SERVER_URL = f"https://{SERVER_HOST}"
 RECV_DIR = r"K:\跨端传输文件"
 STATE_DIR = os.path.join(os.environ.get("APPDATA", r"C:\Users\Administrator\AppData\Roaming"), "SyncClipboard")
 STATE_FILE = os.path.join(STATE_DIR, "synchub_win_state.json")
 LOG_FILE = os.path.join(STATE_DIR, "synchub_win.log")
 SYNCCLIPBOARD_CONFIG = os.path.join(STATE_DIR, "SyncClipboard.json")
-USER_AGENT = "SyncHub-Windows/1.1"
+USER_AGENT = "SyncHub-Windows/1.2"
+# 本机 SyncClipboard 客户端的剪贴板历史（只读打开），用来认出"本机自己复制后上传"的图片/文件
+SC_HISTORY_DB = os.path.join(STATE_DIR, "data", "history.db")
+SC_DATA_DIR = os.path.normcase(os.path.abspath(STATE_DIR))
+# Windows 版 SyncClipboard 把复制的位图存成 Image_2026-11-10_07-08-21_rowe44w5.2ed.png
+# （Mac / Android 的 SyncHub 用 IMG_20261110_043927.png，所以不会被误判）
+WIN_CLIP_IMAGE_RE = re.compile(r"^Image_\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d_[a-z0-9]{8}\.[a-z0-9]{3}\.[A-Za-z0-9]+$")
 
 
 def load_credentials():
@@ -140,6 +148,55 @@ def get_unique_dest_path(folder: str, filename: str) -> str:
         idx += 1
 
 
+def _local_clip_record(item):
+    """在本机 SyncClipboard 历史里找同一条剪贴板记录：先按 hash，再按 文件名+大小。找不到返回 None。"""
+    if not os.path.exists(SC_HISTORY_DB):
+        return None
+    h = (item.get("hash") or "").strip()
+    name = item.get("filename") or ""
+    size = int(item.get("size") or 0)
+    conn = sqlite3.connect(f"file:{SC_HISTORY_DB}?mode=ro", uri=True, timeout=2)
+    try:
+        if h:
+            row = conn.execute('SELECT FilePath, TransferDataFile FROM HistoryRecords WHERE Hash = ? COLLATE NOCASE LIMIT 1', (h,)).fetchone()
+            if row:
+                return row
+        if name and size > 0:
+            for fp, tdf in conn.execute('SELECT FilePath, TransferDataFile FROM HistoryRecords WHERE Size = ? AND Type IN (1, 2)', (size,)):
+                if os.path.basename((tdf or "").replace("\\", "/")) == name:
+                    return fp, tdf
+    finally:
+        conn.close()
+    return None
+
+
+def is_own_clipboard_item(item) -> bool:
+    """True = 这条是本机（Windows）自己复制、经 SyncClipboard 上传后出现在服务器历史里的图片/文件，
+    不应再下载回 K:\\跨端传输文件。其他设备（Mac/手机）发来的文件、它们复制的图片照常接收。
+    判断失败时一律返回 False（宁可多收一份，也不漏收）。"""
+    try:
+        if (item.get("fromDevice") or "Clipboard").strip().lower() != "clipboard":
+            return False                     # SyncHub 上传（from=Mac/Android/Web…）一定接收
+        rec = _local_clip_record(item)
+        if not rec:
+            return False                     # 本机剪贴板历史里没有 → 来自其他设备
+        fp_raw, tdf = rec
+        try:
+            paths = json.loads(fp_raw) if fp_raw and fp_raw.strip().startswith("[") else [fp_raw or ""]
+        except Exception:
+            paths = [fp_raw or ""]
+        # 本机复制的文件：历史里记的是原文件的绝对路径（不在 SyncClipboard 自己的下载目录里）
+        for p in list(paths) + [tdf or ""]:
+            if p and os.path.isabs(p) and not os.path.normcase(os.path.abspath(p)).startswith(SC_DATA_DIR):
+                return True
+        # 本机复制的截图/位图：Windows 版 SyncClipboard 生成的 Image_日期_时间_随机名.png
+        name = item.get("filename") or os.path.basename(tdf or "")
+        return bool(WIN_CLIP_IMAGE_RE.match(name))
+    except Exception as e:
+        log_msg(f"Own-clipboard check error ({type(e).__name__}); receiving normally")
+        return False
+
+
 def poll_once():
     last_id = load_last_id()
     ctx = ssl.create_default_context()
@@ -162,6 +219,9 @@ def poll_once():
         cat = item.get("category") or "其他"
 
         if not dl_path:
+            continue
+        if is_own_clipboard_item(item):
+            log_msg(f"Skipped own clipboard item (copied on this PC): {fname}")
             continue
 
         os.makedirs(RECV_DIR, exist_ok=True)
@@ -197,7 +257,7 @@ def poll_once():
 
 def run_daemon():
     os.makedirs(RECV_DIR, exist_ok=True)
-    log_msg(f"SyncHub Windows Auto-Receiver Daemon started. Watching -> {RECV_DIR}")
+    log_msg(f"SyncHub Windows Auto-Receiver Daemon started ({USER_AGENT}). Watching -> {RECV_DIR}")
     if not load_credentials():
         log_msg("Warning: no SyncClipboard account found; server will answer 401 (set SYNCHUB_USER/SYNCHUB_PASSWORD or log in to SyncClipboard)")
     last_ok_log = 0.0
