@@ -24,11 +24,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private var storageFetchedAt = Date.distantPast
     private var storageLoading = false
     private var downloading = 0
+    private var downloadingName = ""
     private var dragHighlight = false
     private var pendingOpen: [URL] = []
     private var launched = false
 
     // MARK: lifecycle
+
+    /// The notification delegate must be in place before launching finishes, or a banner click that launches the
+    /// app is dropped (Apple: set UNUserNotificationCenter.delegate before applicationDidFinishLaunching returns).
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        Notifier.shared.setUp()
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Only one copy may sync: a second instance (e.g. another SyncHub.app elsewhere on disk) would see the
@@ -41,7 +48,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             NSApp.terminate(nil)
             return
         }
-        Notifier.shared.setUp()
 
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("SyncHub", isDirectory: true)
@@ -78,6 +84,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         refreshRecent(force: true)
         refreshStorage(force: true)
         launched = true
+        Notifier.shared.onTap = { [weak self] tap in self?.handleTap(tap) }
         if !pendingOpen.isEmpty { handle(pendingOpen); pendingOpen = [] }
         if settings.isFirstRun { SettingsWindowController.shared.show() }
     }
@@ -310,6 +317,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         menu.addItem(.separator())
         let sec = NSMenuItem(title: "最近项目", action: nil, keyEquivalent: "")
         sec.isEnabled = false
+        let secTitle = NSMutableAttributedString(string: "最近项目", attributes: [.font: NSFont.menuFont(ofSize: 13),
+                                                                                .foregroundColor: NSColor.disabledControlTextColor])
+        if !recent.isEmpty {
+            secTitle.append(NSAttributedString(string: "    按住 ⌥ / ⌘ 查看更多操作", attributes: [
+                .font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.tertiaryLabelColor]))
+        }
+        sec.attributedTitle = secTitle
         menu.addItem(sec)
         if recent.isEmpty {
             let e = NSMenuItem(title: connected == false ? "无法获取（见上方错误）" : "暂无项目", action: nil, keyEquivalent: "")
@@ -317,19 +331,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             menu.addItem(e)
         }
         for it in recent.prefix(8) {
+            let local = localCopy(of: it)
             let mi = NSMenuItem(title: it.displayName, action: #selector(openRecent(_:)), keyEquivalent: "")
             mi.target = self
             mi.representedObject = it
-            mi.attributedTitle = recentTitle(it)
-            mi.toolTip = it.isFile ? "点击下载并打开（按住 ⌥ 改为在 Finder 中显示）" : "点击复制到剪贴板（按住 ⌥ 在网页中查看）"
+            mi.attributedTitle = recentTitle(it, local: local != nil)
+            if it.isFile {
+                mi.toolTip = (local != nil ? "点击打开（已在本机）" : "点击下载并打开") + "\n⌥ 在 Finder 中显示 · ⌘ " + (local != nil ? "复制文件路径" : "仅下载到接收文件夹")
+            } else {
+                mi.toolTip = "点击复制到剪贴板\n⌥ 查看全文 · ⌘ 在网页中查看"
+            }
             menu.addItem(mi)
-            let alt = NSMenuItem(title: "", action: #selector(openRecentAlt(_:)), keyEquivalent: "")
-            alt.target = self
-            alt.representedObject = it
-            alt.attributedTitle = recentTitle(it, alt: true)
-            alt.isAlternate = true
-            alt.keyEquivalentModifierMask = .option
-            menu.addItem(alt)
+            // Alternates replace the row while ⌥ / ⌘ is held.
+            let altTitle = it.isFile ? "在 Finder 中显示：" : "查看全文："
+            let cmdTitle = it.isFile ? (local != nil ? "复制文件路径：" : "仅下载：") : "在网页中查看："
+            for (prefix, sel, mods) in [(altTitle, #selector(openRecentAlt(_:)), NSEvent.ModifierFlags.option),
+                                        (cmdTitle, #selector(openRecentCmd(_:)), NSEvent.ModifierFlags.command)] {
+                let alt = NSMenuItem(title: "", action: sel, keyEquivalent: "")
+                alt.target = self
+                alt.representedObject = it
+                alt.attributedTitle = recentTitle(it, prefix: prefix, local: local != nil)
+                alt.isAlternate = true
+                alt.keyEquivalentModifierMask = mods
+                menu.addItem(alt)
+            }
         }
         menu.addItem(item("在网页中查看全部…", #selector(openWeb(_:)), symbol: "safari"))
 
@@ -363,16 +388,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         return i
     }
 
-    private func recentTitle(_ it: HubItem, alt: Bool = false) -> NSAttributedString {
+    private func recentTitle(_ it: HubItem, prefix: String = "", local: Bool = false) -> NSAttributedString {
         var name = it.displayName
         if name.count > 34 { name = String(name.prefix(22)) + "…" + String(name.suffix(10)) }
-        if alt { name = (it.isFile ? "在 Finder 中显示：" : "在网页中查看：") + name }
+        name = prefix + name
         let s = NSMutableAttributedString(string: name, attributes: [.font: NSFont.menuFont(ofSize: 13)])
         var meta: [String] = []
         if it.pinned == true { meta.append("置顶") }
         if it.starred == true { meta.append("★ 收藏") }
         meta.append(it.fromDevice ?? "")
         if it.isFile, let sz = it.size { meta.append(HubFormat.bytes(sz)) }
+        if it.isFile && local { meta.append("已在本机") }
         meta.append(HubFormat.relative(it.createdAt))
         if let r = HubFormat.remaining(it.remainingSeconds), (it.remainingSeconds ?? 0) < 12 * 3600 { meta.append(r) }
         s.append(NSAttributedString(string: "\n" + meta.filter { !$0.isEmpty }.joined(separator: " · "),
@@ -405,7 +431,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         let host = NSHostingView(rootView: MenuHeader(
             connected: connected, server: URL(string: settings.config.normalizedBase)?.host ?? settings.serverURL,
             lastSync: lastSync, error: lastError, autoReceive: settings.autoReceive,
-            uploading: uploads.activeJobs.count, progress: uploads.totalFraction, downloading: downloading))
+            uploading: uploads.activeJobs.count, progress: uploads.totalFraction, downloading: downloading,
+            downloadingName: downloadingName))
         host.frame = NSRect(x: 0, y: 0, width: 300, height: 52)
         return host
     }
@@ -506,7 +533,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     @objc func openRecent(_ sender: NSMenuItem) {
         guard let it = sender.representedObject as? HubItem else { return }
-        if it.isFile { fetch(it, reveal: false) }
+        if it.isFile { fetch(it, then: .open) }
         else {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(it.text ?? "", forType: .string)
@@ -514,41 +541,104 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         }
     }
 
+    /// ⌥: file → show in Finder (downloads first if needed); text → full-text window.
     @objc func openRecentAlt(_ sender: NSMenuItem) {
         guard let it = sender.representedObject as? HubItem else { return }
-        if it.isFile { fetch(it, reveal: true) } else { openWeb(nil) }
+        if it.isFile { fetch(it, then: .reveal) }
+        else if (it.text ?? "").isEmpty { openWeb(nil) }
+        else { TextViewerWindowController.show(it) }
     }
 
-    /// Download a recent file into the receive folder (reuse an identical existing copy), then open / reveal.
-    private func fetch(_ it: HubItem, reveal: Bool) {
+    /// ⌘: file → download only (or copy the local path if already here); text → web page.
+    @objc func openRecentCmd(_ sender: NSMenuItem) {
+        guard let it = sender.representedObject as? HubItem else { return }
+        guard it.isFile else { openWeb(nil); return }
+        if let u = localCopy(of: it) {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(u.path, forType: .string)
+            Notifier.shared.post("已复制文件路径", u.path, file: u)
+        } else {
+            fetch(it, then: .keep)
+        }
+    }
+
+    private enum AfterFetch { case open, reveal, keep }
+
+    /// The file's copy in the receive folder ("name.ext" or "name (n).ext" with the same size), if any.
+    private func localCopy(of it: HubItem) -> URL? {
+        guard it.isFile else { return nil }
+        let name = HubFormat.safeFilename(it.filename ?? "", fallback: "file_\(it.id)")
+        return HubFormat.localCopy(in: settings.receiveURL, filename: name, size: it.size)
+    }
+
+    /// Use the local copy if there is one, otherwise download (Basic auth via HubClient) into the receive folder.
+    private func fetch(_ it: HubItem, then: AfterFetch) {
         let dir = settings.receiveURL
         let name = HubFormat.safeFilename(it.filename ?? "", fallback: "file_\(it.id)")
-        let existing = dir.appendingPathComponent(name)
-        let finish: (URL) -> Void = { u in
-            if reveal { NSWorkspace.shared.activateFileViewerSelecting([u]) } else { NSWorkspace.shared.open(u) }
+        let finish: (URL, Bool) -> Void = { [weak self] u, fresh in
+            switch then {
+            case .open: self?.showLocal(u)
+            case .reveal: NSWorkspace.shared.activateFileViewerSelecting([u])
+            case .keep:
+                Notifier.shared.post(fresh ? "📥 已下载" : "文件已在本机", "\(u.lastPathComponent) · 点击打开", file: u)
+            }
         }
-        if let sz = it.size, sz > 0,
-           ((try? FileManager.default.attributesOfItem(atPath: existing.path))?[.size] as? NSNumber)?.int64Value == sz {
-            finish(existing); return
-        }
-        guard let c = currentClient() else { return }
-        downloading += 1; updateIcon()
+        if let u = localCopy(of: it) { finish(u, false); return }
+        guard let c = currentClient() else { openSettings(nil); return }
+        downloading += 1; downloadingName = it.displayName; updateIcon()
+        if menuIsOpen { rebuildMenu() }
         c.download(item: it) { [weak self] r in
             DispatchQueue.main.async {
-                self?.downloading -= 1; self?.updateIcon()
+                guard let self = self else { return }
+                self.downloading -= 1
+                if self.downloading == 0 { self.downloadingName = "" }
+                self.updateIcon()
                 switch r {
                 case .success(let tmp):
                     do {
                         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
                         let dest = HubFormat.uniqueURL(in: dir, filename: name)
                         try FileManager.default.moveItem(at: tmp, to: dest)
-                        finish(dest)
+                        finish(dest, true)
                     } catch {
+                        try? FileManager.default.removeItem(at: tmp)
                         Notifier.shared.post("下载失败", error.localizedDescription)
                     }
                 case .failure(let e):
-                    Notifier.shared.post("下载失败", e.localizedDescription)
+                    if !e.isCancelled { Notifier.shared.post("下载失败：\(name)", e.localizedDescription) }
                 }
+                if case .success = r { self.record(.success(())) }
+            }
+        }
+    }
+
+    /// Open a local file with its default app; script-like files, unreadable files and types with no app are only
+    /// selected in Finder; a file that's gone reveals its folder instead.
+    private func showLocal(_ u: URL) {
+        switch LocalFileAction.plan(path: u.path) {
+        case .open(let f):
+            if NSWorkspace.shared.urlForApplication(toOpen: f) != nil, NSWorkspace.shared.open(f) { return }
+            NSWorkspace.shared.activateFileViewerSelecting([f])
+            Notifier.shared.post("没有可以打开此文件的应用", "已在 Finder 中显示 \(f.lastPathComponent)")
+        case .reveal(let f):
+            NSWorkspace.shared.activateFileViewerSelecting([f])
+        case .revealFolder(let d):
+            NSWorkspace.shared.open(d)
+            Notifier.shared.post("找不到文件", "\(u.lastPathComponent) 已被移动或删除，已打开所在文件夹")
+        case .missing:
+            Notifier.shared.post("找不到文件", "\(u.lastPathComponent) 已被移动或删除")
+        }
+    }
+
+    /// Banner clicks: file banners open the file; everything else pops the menu.
+    private func handleTap(_ tap: NotificationTap) {
+        switch tap {
+        case .openFile(let p): showLocal(URL(fileURLWithPath: p))
+        case .showMenu:
+            // Let Notification Center finish dismissing first, or the menu closes again immediately.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                NSApp.activate(ignoringOtherApps: true)
+                self?.statusItem?.button?.performClick(nil)
             }
         }
     }
@@ -558,8 +648,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private func didReceive(_ item: HubItem, at url: URL) {
         let size = ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? NSNumber)?.int64Value ?? 0
         Notifier.shared.post("📥 已收到来自 \(item.fromDevice ?? "其他设备") 的文件",
-                             "\(url.lastPathComponent)（\(HubFormat.bytes(size))）· 点击在 Finder 中显示",
-                             reveal: url)
+                             "\(url.lastPathComponent)（\(HubFormat.bytes(size))）· 点击打开",
+                             file: url)
         refreshRecent(force: true)
     }
 
@@ -594,6 +684,7 @@ struct MenuHeader: View {
     let uploading: Int
     let progress: Double
     let downloading: Int
+    var downloadingName: String = ""
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -624,7 +715,11 @@ struct MenuHeader: View {
     }
     private var line2: String {
         if uploading > 0 { return "正在发送 \(uploading) 个项目 · \(Int(progress * 100))%" }
-        if downloading > 0 { return "正在下载…" }
+        if downloading > 0 {
+            var n = downloadingName
+            if n.count > 24 { n = String(n.prefix(16)) + "…" + String(n.suffix(6)) }
+            return downloading > 1 ? "正在下载 \(downloading) 个文件…" : (n.isEmpty ? "正在下载…" : "正在下载 \(n)…")
+        }
         if let e = error { return e }
         var parts: [String] = []
         if let d = lastSync {

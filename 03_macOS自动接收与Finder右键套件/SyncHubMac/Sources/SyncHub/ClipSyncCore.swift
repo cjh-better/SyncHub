@@ -175,7 +175,7 @@ final class SyncClipboardHTTP: ClipTransport {
         c.timeoutIntervalForResource = 120
         c.requestCachePolicy = .reloadIgnoringLocalCacheData
         c.urlCache = nil
-        c.httpAdditionalHeaders = ["User-Agent": "SyncHub-Mac/1.1.1"]
+        c.httpAdditionalHeaders = ["User-Agent": "SyncHub-Mac/1.1.2"]
         session = URLSession(configuration: c)
     }
 

@@ -196,18 +196,35 @@ enum HubFormat {
 
     /// True if "name.ext" or any existing "name (n).ext" already has exactly `size` bytes (no re-download).
     static func alreadyHave(in dir: URL, filename: String, size: Int64, fm: FileManager = .default) -> Bool {
+        size > 0 && localCopy(in: dir, filename: filename, size: size, fm: fm) != nil
+    }
+
+    /// The local copy of a hub file in the receive folder: "name.ext" or "name (n).ext" with exactly `size` bytes.
+    /// With an unknown size (nil / 0) only the exact name counts. Directories never match.
+    static func localCopy(in dir: URL, filename: String, size: Int64?, fm: FileManager = .default) -> URL? {
         let ext = (filename as NSString).pathExtension
         let base = (filename as NSString).deletingPathExtension
+        func isFile(_ p: String) -> Bool { var d: ObjCBool = false; return fm.fileExists(atPath: p, isDirectory: &d) && !d.boolValue }
+        guard let want = size, want > 0 else {
+            let u = dir.appendingPathComponent(filename)
+            return isFile(u.path) ? u : nil
+        }
         var i = 0
         while i < 1000 {
             let n = i == 0 ? filename : (ext.isEmpty ? "\(base) (\(i))" : "\(base) (\(i)).\(ext)")
-            let p = dir.appendingPathComponent(n).path
-            guard fm.fileExists(atPath: p) else { return false }
-            if ((try? fm.attributesOfItem(atPath: p))?[.size] as? NSNumber)?.int64Value == size { return true }
+            let u = dir.appendingPathComponent(n)
+            // Stop at the first gap of the "(n)" chain, except the bare name may have been deleted while copies remain.
+            guard fm.fileExists(atPath: u.path) else { if i == 0 { i = 1; continue }; return nil }
+            if isFile(u.path), ((try? fm.attributesOfItem(atPath: u.path))?[.size] as? NSNumber)?.int64Value == want { return u }
             i += 1
         }
-        return false
+        return nil
     }
+
+    /// File types that would run code when "opened" from a notification / menu click: these are only shown in Finder.
+    static let revealOnlyExtensions: Set<String> = ["command", "tool", "sh", "bash", "zsh", "csh", "ksh", "terminal",
+                                                    "scpt", "scptd", "applescript", "workflow", "action", "jar", "app"]
+    static func opensSafely(_ url: URL) -> Bool { !revealOnlyExtensions.contains(url.pathExtension.lowercased()) }
 
     /// "name.ext" -> "name (1).ext", "name (2).ext", ... (same as get_unique_dest_path on Windows)
     static func uniqueURL(in dir: URL, filename: String, fm: FileManager = .default) -> URL {
@@ -221,6 +238,47 @@ enum HubFormat {
             if !fm.fileExists(atPath: cand.path) { return cand }
             i += 1
         }
+    }
+}
+
+// MARK: - Notification taps (pure logic; AppKit side in Notifier / AppDelegate)
+
+/// What clicking a banner does. File banners carry the file path in userInfo["file"] (1.1.1 used "reveal").
+enum NotificationTap: Equatable {
+    case openFile(String)
+    case showMenu
+
+    static let fileKey = "file"
+    static let legacyKey = "reveal"
+
+    static func userInfo(file: URL?) -> [String: String] {
+        guard let f = file else { return [:] }
+        return [fileKey: f.path]
+    }
+
+    static func route(_ info: [AnyHashable: Any]) -> NotificationTap {
+        for k in [fileKey, legacyKey] {
+            if let p = info[k] as? String, !p.isEmpty { return .openFile(p) }
+        }
+        return .showMenu
+    }
+}
+
+/// How to show a local file the user clicked: open it, only reveal it, or (gone) reveal the folder it was in.
+enum LocalFileAction: Equatable {
+    case open(URL)
+    case reveal(URL)
+    case revealFolder(URL)
+    case missing
+
+    static func plan(path: String, fm: FileManager = .default) -> LocalFileAction {
+        let u = URL(fileURLWithPath: path)
+        if fm.fileExists(atPath: u.path) {
+            return HubFormat.opensSafely(u) && fm.isReadableFile(atPath: u.path) ? .open(u) : .reveal(u)
+        }
+        let dir = u.deletingLastPathComponent()
+        var d: ObjCBool = false
+        return fm.fileExists(atPath: dir.path, isDirectory: &d) && d.boolValue ? .revealFolder(dir) : .missing
     }
 }
 
@@ -255,7 +313,7 @@ final class HubClient: NSObject, URLSessionDataDelegate {
         c.timeoutIntervalForRequest = 20
         c.timeoutIntervalForResource = 60
         c.requestCachePolicy = .reloadIgnoringLocalCacheData
-        c.httpAdditionalHeaders = ["User-Agent": "SyncHub-Mac/1.1.1"]
+        c.httpAdditionalHeaders = ["User-Agent": "SyncHub-Mac/1.1.2"]
         return URLSession(configuration: c)
     }()
     /// Large transfers: long resource timeout (server allows up to 1 GB, nginx read timeout 3600 s).
@@ -263,7 +321,7 @@ final class HubClient: NSObject, URLSessionDataDelegate {
         let c = URLSessionConfiguration.ephemeral
         c.timeoutIntervalForRequest = 120
         c.timeoutIntervalForResource = 4 * 3600
-        c.httpAdditionalHeaders = ["User-Agent": "SyncHub-Mac/1.1.1"]
+        c.httpAdditionalHeaders = ["User-Agent": "SyncHub-Mac/1.1.2"]
         return URLSession(configuration: c, delegate: self, delegateQueue: delegateQueue)
     }()
 
@@ -410,7 +468,7 @@ final class HubClient: NSObject, URLSessionDataDelegate {
         let session = URLSession(configuration: {
             let c = URLSessionConfiguration.ephemeral
             c.timeoutIntervalForRequest = 120; c.timeoutIntervalForResource = 4 * 3600
-            c.httpAdditionalHeaders = ["User-Agent": "SyncHub-Mac/1.1.1"]
+            c.httpAdditionalHeaders = ["User-Agent": "SyncHub-Mac/1.1.2"]
             return c
         }())
         let task = session.downloadTask(with: req) { tmp, resp, err in

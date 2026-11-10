@@ -168,5 +168,48 @@ check("usedFraction", abs(fixed.usedFraction - 0.1806) < 0.001 && HubStorage(tot
 check("format bytes", HubFormat.bytes(1536) == "1 KB" && HubFormat.bytes(5_242_880) == "5.00 MB")
 check("safeFilename strips path", HubFormat.safeFilename("../../etc/passwd", fallback: "x") == "passwd" && HubFormat.safeFilename("..", fallback: "x") == "x")
 
+// 1.1.2: local copies, notification routing, open plan
+let lc = work.appendingPathComponent("lc"); try! fm.createDirectory(at: lc, withIntermediateDirectories: true)
+func put(_ n: String, _ size: Int) { try! Data(count: size).write(to: lc.appendingPathComponent(n)) }
+put("a.pdf", 10); put("a (1).pdf", 20); put("a (2).pdf", 30); put("noext", 5); put("b (1).txt", 7)
+check("localCopy exact name", HubFormat.localCopy(in: lc, filename: "a.pdf", size: 10)?.lastPathComponent == "a.pdf")
+check("localCopy finds name (n) copy", HubFormat.localCopy(in: lc, filename: "a.pdf", size: 30)?.lastPathComponent == "a (2).pdf")
+check("localCopy size mismatch -> nil", HubFormat.localCopy(in: lc, filename: "a.pdf", size: 99) == nil)
+check("localCopy no extension", HubFormat.localCopy(in: lc, filename: "noext", size: 5) != nil)
+check("localCopy bare name deleted, (1) remains", HubFormat.localCopy(in: lc, filename: "b.txt", size: 7)?.lastPathComponent == "b (1).txt")
+check("localCopy unknown size: exact name only", HubFormat.localCopy(in: lc, filename: "a.pdf", size: nil) != nil && HubFormat.localCopy(in: lc, filename: "b.txt", size: 0) == nil)
+try! fm.createDirectory(at: lc.appendingPathComponent("dir.zip"), withIntermediateDirectories: true)
+check("localCopy ignores directories", HubFormat.localCopy(in: lc, filename: "dir.zip", size: nil) == nil)
+check("alreadyHave still works", HubFormat.alreadyHave(in: lc, filename: "a.pdf", size: 20) && !HubFormat.alreadyHave(in: lc, filename: "a.pdf", size: 0))
+
+let ui = NotificationTap.userInfo(file: lc.appendingPathComponent("a.pdf"))
+check("file banner carries path in userInfo", ui["file"] == lc.appendingPathComponent("a.pdf").path)
+check("route file banner -> openFile", NotificationTap.route(ui) == .openFile(lc.appendingPathComponent("a.pdf").path))
+check("route 1.1.1 banner (reveal key) -> openFile", NotificationTap.route(["reveal": "/x/y.zip"]) == .openFile("/x/y.zip"))
+check("route other banners -> showMenu", NotificationTap.route([:]) == .showMenu && NotificationTap.route(["file": ""]) == .showMenu
+      && NotificationTap.userInfo(file: nil).isEmpty)
+
+check("plan: existing pdf -> open", LocalFileAction.plan(path: lc.appendingPathComponent("a.pdf").path) == .open(lc.appendingPathComponent("a.pdf")))
+put("run.command", 3); put("x.SH", 3)
+check("plan: .command / .SH -> reveal only", LocalFileAction.plan(path: lc.appendingPathComponent("run.command").path) == .reveal(lc.appendingPathComponent("run.command"))
+      && LocalFileAction.plan(path: lc.appendingPathComponent("x.SH").path) == .reveal(lc.appendingPathComponent("x.SH")))
+if case .revealFolder(let d) = LocalFileAction.plan(path: lc.appendingPathComponent("gone.pdf").path) {
+    check("plan: deleted file -> reveal folder", d.standardizedFileURL.path == lc.standardizedFileURL.path)
+} else { check("plan: deleted file -> reveal folder", false) }
+check("plan: folder gone too -> missing", LocalFileAction.plan(path: "/nonexistent_synchub/q/gone.pdf") == .missing)
+
+// download a text-free file item into a receive folder and find it as the local copy (menu "已在本机" path)
+let li: Result<[HubItem], HubError> = wait { mac.listItems(limit: 50, completion: $0) }
+if case .success(let items) = li, let f = items.first(where: { $0.isFile && ($0.size ?? 0) > 0 }) {
+    let rd = work.appendingPathComponent("recv"); try! fm.createDirectory(at: rd, withIntermediateDirectories: true)
+    let name = HubFormat.safeFilename(f.filename ?? "", fallback: "file_\(f.id)")
+    check("not local before download", HubFormat.localCopy(in: rd, filename: name, size: f.size) == nil)
+    let dl: Result<URL, HubError> = wait { c in _ = mac.download(item: f, completion: c) }
+    if case .success(let tmp) = dl {
+        let dest = HubFormat.uniqueURL(in: rd, filename: name); try! fm.moveItem(at: tmp, to: dest)
+        check("downloaded file found as local copy (\(name))", HubFormat.localCopy(in: rd, filename: name, size: f.size) == dest)
+    } else { check("download \(dl)", false) }
+} else { check("list for download test", false) }
+
 print(fails == 0 ? "ALL PASSED" : "\(fails) FAILED")
 exit(fails == 0 ? 0 : 1)
