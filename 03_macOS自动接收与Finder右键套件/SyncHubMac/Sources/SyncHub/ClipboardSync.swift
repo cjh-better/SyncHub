@@ -43,6 +43,8 @@ final class ClipboardSync {
 
     /// Main thread: called whenever the status line changes.
     var onStatus: ((ClipStatus) -> Void)?
+    /// Main thread: several files / a folder copied in Finder → send them through SyncHub (AppDelegate's upload queue).
+    var onUploadFiles: (([URL]) -> Void)?
     private(set) var status = ClipStatus()
     private(set) var running = false
 
@@ -58,6 +60,7 @@ final class ClipboardSync {
     private var pushBackoff = ClipBackoff(base: 2)
     private var pushRetryAt: Date?
     private var pollStartedAt: Date?
+    private var lastFileSig: String?           // last Finder selection handled (⌘C twice → sent once)
 
     // MARK: lifecycle
 
@@ -117,10 +120,16 @@ final class ClipboardSync {
         if ClipPasteboardRules.isPrivate(types) {
             setStatus(ClipStatus(time: Date(), text: "已跳过密码等隐私内容（不同步）")); return
         }
-        // Copied files in Finder: use 发送文件 / Finder 右键; the clipboard only syncs text and images.
-        if pb.availableType(from: [.fileURL]) != nil { return }
-
         let gen = generation
+        // Files copied in Finder (public.file-url). Finder also puts the file names on the pasteboard as text;
+        // those are never sent as text.
+        if pb.availableType(from: [.fileURL]) != nil {
+            guard settings.clipFiles else { return }
+            let urls = (pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
+            copiedFiles(urls, engine: engine, gen: gen)
+            return
+        }
+
         if let text = pb.string(forType: .string) {
             engine.onLocalText(text) { [weak self] r in
                 DispatchQueue.main.async { self?.pushed(r, gen: gen, what: "文字（\(text.count) 字）") }
@@ -130,8 +139,49 @@ final class ClipboardSync {
         guard settings.clipImages, let png = Self.pngData(pb) else { return }
         let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "yyyyMMdd_HHmmss"
         let name = "IMG_\(f.string(from: Date())).png"
+        OwnClipPushes.shared.note(name: name, size: Int64(png.count))
         engine.onLocalImage(name: name, data: png) { [weak self] r in
             DispatchQueue.main.async { self?.pushed(r, gen: gen, what: "图片（\(HubFormat.bytes(Int64(png.count)))）") }
+        }
+    }
+
+    private func copiedFiles(_ urls: [URL], engine: ClipSyncEngine, gen: Int) {
+        let sig = ClipFilePlan.signature(urls)
+        if sig == lastFileSig { return }
+        lastFileSig = sig
+        // Sizing a folder and reading the file can take a moment: do it off the main thread.
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let plan = ClipFilePlan.make(urls, maxBytes: ClipSyncEngine.maxFileBytes)
+            switch plan {
+            case .none:
+                return
+            case .tooLarge(let total):
+                DispatchQueue.main.async {
+                    guard let self = self, gen == self.generation else { return }
+                    self.setStatus(ClipStatus(time: Date(), text: "复制的文件共 \(HubFormat.bytes(total))，超过 \(HubFormat.bytes(ClipSyncEngine.maxFileBytes))，未同步（可用「发送文件…」）"))
+                }
+            case .upload(let list, let total):
+                DispatchQueue.main.async {
+                    guard let self = self, gen == self.generation else { return }
+                    self.onUploadFiles?(list)
+                    self.setStatus(ClipStatus(time: Date(), direction: .up, text: "正在发送复制的 \(list.count) 项（\(HubFormat.bytes(total))）"))
+                }
+            case .clipboard(let u, _):
+                guard let data = try? Data(contentsOf: u, options: .mappedIfSafe) else {
+                    DispatchQueue.main.async {
+                        self?.setStatus(ClipStatus(time: Date(), text: "无法读取复制的文件 \(u.lastPathComponent)", isError: true))
+                    }
+                    return
+                }
+                let name = u.lastPathComponent
+                OwnClipPushes.shared.note(name: name, size: Int64(data.count))
+                engine.onLocalFile(name: name, data: data) { r in
+                    DispatchQueue.main.async {
+                        if case .failure = r { self?.lastFileSig = nil }      // let the retry / next ⌘C send it again
+                        self?.pushed(r, gen: gen, what: "文件 \(name)（\(HubFormat.bytes(Int64(data.count)))）")
+                    }
+                }
+            }
         }
     }
 

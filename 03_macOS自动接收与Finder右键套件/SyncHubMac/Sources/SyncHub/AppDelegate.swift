@@ -13,6 +13,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private var pollTimer: Timer?
     private var heartbeatTimer: Timer?
     private let clipSync = ClipboardSync()
+    private var outbox: FolderOutbox!
+    private var outboxTimer: Timer?
+    private var outboxSource: DispatchSourceFileSystemObject?
+    private var outboxDir = ""
 
     // connection state shown in the menu header
     private var connected: Bool?
@@ -60,11 +64,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             DispatchQueue.main.async { self?.didReceive(item, at: url) }
         }
         receiver.onPoll = { [weak self] r in DispatchQueue.main.async { self?.record(r.map { _ in () }) } }
+        // Files this Mac copied onto the shared clipboard come back in the history as "Clipboard": don't re-download.
+        receiver.skip = { OwnClipPushes.shared.matches($0) }
+        outbox = FolderOutbox(dir: settings.receiveURL, indexURL: support.appendingPathComponent("outbox_index.json"))
+        outboxDir = settings.receiveURL.standardizedFileURL.path
+        // Received files must never be sent back out by the folder watcher.
+        receiver.willSave = { [weak self] u in self?.outbox.ignore(u) }
 
         uploads.clientProvider = { [weak self] in self?.currentClient() }
         uploads.onChange = { [weak self] in self?.updateIcon() }
         uploads.onJobFinished = { [weak self] job in self?.uploadFinished(job) }
 
+        clipSync.onUploadFiles = { [weak self] urls in
+            self?.uploads.enqueue(urls); self?.updateIcon()
+        }
         clipSync.onStatus = { [weak self] _ in
             guard let self = self else { return }
             if self.menuIsOpen { self.rebuildMenu() }
@@ -78,6 +91,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
                                                name: .settingsChanged, object: nil)
         restartTimers()
         clipSync.restart()
+        restartOutbox()
         // After sleep the network may be gone for a while; restart so polling resumes at the normal rate.
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(didWake(_:)),
                                                           name: NSWorkspace.didWakeNotification, object: nil)
@@ -136,6 +150,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         restartTimers(); refreshRecent(force: true)
         storage = nil; refreshStorage(force: true)
         clipSync.restart()
+        let d = settings.receiveURL.standardizedFileURL.path
+        if d != outboxDir { outboxDir = d; outbox.reset(dir: settings.receiveURL) }   // new folder: start from what's there
+        else if settings.autoSendFolder && outboxTimer == nil { outbox.reset() }     // just switched on in Settings
+        restartOutbox()
+    }
+
+    // MARK: transfer-folder watcher (auto-send new files)
+
+    /// Scans every 2 s, plus right away when the folder changes (kqueue vnode source). Top level only.
+    private func restartOutbox() {
+        outboxTimer?.invalidate(); outboxTimer = nil
+        outboxSource?.cancel(); outboxSource = nil
+        guard settings.autoSendFolder else { return }
+        let t = Timer(timeInterval: 2, target: self, selector: #selector(outboxTick(_:)), userInfo: nil, repeats: true)
+        t.tolerance = 0.5
+        RunLoop.main.add(t, forMode: .common)
+        outboxTimer = t
+        let fd = Darwin.open(settings.receiveURL.path, O_EVTONLY)
+        if fd >= 0 {
+            let src = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: [.write, .rename, .delete],
+                                                                queue: .main)
+            src.setEventHandler { [weak self] in
+                // Give the copy a moment, then look (the stability check still waits for the size to settle).
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self?.outboxTick(nil) }
+            }
+            src.setCancelHandler { Darwin.close(fd) }
+            src.resume()
+            outboxSource = src
+        }
+    }
+
+    @objc private func outboxTick(_ t: Timer?) {
+        guard settings.autoSendFolder, let ob = outbox else { return }
+        let ready = ob.scan()
+        guard !ready.isEmpty else { return }
+        guard currentClient() != nil else { return }
+        NSLog("SyncHub: auto-send \(ready.count) new file(s) from the transfer folder")
+        uploads.enqueue(ready)
+        updateIcon()
+        if menuIsOpen { rebuildMenu() }
+    }
+
+    @objc func toggleAutoSend(_ sender: Any?) {
+        let on = !settings.autoSendFolder
+        settings.setAutoSendFolder(on)
+        if on { outbox.reset(dir: settings.receiveURL) }     // files that arrived while it was off are not sent
+        restartOutbox()
+        rebuildMenu()
     }
 
     @objc private func didWake(_ n: Notification) { clipSync.restart() }
@@ -299,6 +361,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         let auto = item("自动接收文件", #selector(toggleAutoReceive(_:)))
         auto.state = settings.autoReceive ? .on : .off
         menu.addItem(auto)
+        let autoSendItem = item("自动发送传输文件夹里的新文件", #selector(toggleAutoSend(_:)))
+        autoSendItem.state = settings.autoSendFolder ? .on : .off
+        autoSendItem.toolTip = "放进「\((settings.receiveDir as NSString).lastPathComponent)」的新文件会自动发送到 Windows 和手机（文件夹会压缩成 zip）"
+        menu.addItem(autoSendItem)
         let clip = item("同步剪贴板", #selector(toggleClipSync(_:)))
         clip.state = settings.clipSync ? .on : .off
         clip.toolTip = "在 Mac、Windows、手机之间自动同步复制的文字\(settings.clipImages ? "和图片" : "")"
@@ -598,6 +664,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
                     do {
                         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
                         let dest = HubFormat.uniqueURL(in: dir, filename: name)
+                        self.outbox?.ignore(dest)           // a download is not a new file to send
                         try FileManager.default.moveItem(at: tmp, to: dest)
                         finish(dest, true)
                     } catch {

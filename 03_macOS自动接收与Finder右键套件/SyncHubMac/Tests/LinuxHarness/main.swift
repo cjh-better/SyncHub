@@ -1,5 +1,5 @@
 // Linux test harness for HubCore.swift (run against a LOCAL synchub_server.py only).
-// Build: swiftc ../../Sources/SyncHub/HubCore.swift main.swift -o harness
+// Build: swiftc ../../Sources/SyncHub/HubCore.swift ../../Sources/SyncHub/OutboxCore.swift main.swift -o harness
 // Run:   ./harness http://127.0.0.1:PORT /tmp/workdir [USER PASS]   (server requires Basic auth since 2026-11-10)
 import Foundation
 #if canImport(FoundationNetworking)
@@ -210,6 +210,109 @@ if case .success(let items) = li, let f = items.first(where: { $0.isFile && ($0.
         check("downloaded file found as local copy (\(name))", HubFormat.localCopy(in: rd, filename: name, size: f.size) == dest)
     } else { check("download \(dl)", false) }
 } else { check("list for download test", false) }
+
+// 1.1.3: transfer-folder auto-send (FolderOutbox)
+let ob = work.appendingPathComponent("outbox"); try! fm.createDirectory(at: ob, withIntermediateDirectories: true)
+let obIdx = work.appendingPathComponent("support/outbox_index.json")
+func w(_ n: String, _ s: Int = 10) { try! Data(count: s).write(to: ob.appendingPathComponent(n)) }
+w("old1.pdf"); w("old2.txt")
+let later = { Date().addingTimeInterval(10) }
+var o = FolderOutbox(dir: ob, indexURL: obIdx)
+check("outbox: first run sends nothing already there", o.scan(now: later()).isEmpty && o.scan(now: later().addingTimeInterval(5)).isEmpty)
+w("new.docx", 100)
+let t0 = Date().addingTimeInterval(10)
+check("outbox: new file waits one stable interval", o.scan(now: t0).isEmpty)
+check("outbox: still too soon", o.scan(now: t0.addingTimeInterval(1)).isEmpty)
+let s1 = o.scan(now: t0.addingTimeInterval(4)).map { $0.lastPathComponent }
+check("outbox: new file sent once stable \(s1)", s1 == ["new.docx"])
+check("outbox: not sent twice", o.scan(now: t0.addingTimeInterval(20)).isEmpty)
+// growing file: size changes between scans
+w("grow.mov", 10); let g0 = Date().addingTimeInterval(10)
+_ = o.scan(now: g0); w("grow.mov", 5000)
+check("outbox: growing file restarts the wait", o.scan(now: g0.addingTimeInterval(4)).isEmpty)
+check("outbox: then sent", o.scan(now: g0.addingTimeInterval(8)).map { $0.lastPathComponent } == ["grow.mov"])
+// junk / partial names
+for n in [".DS_Store", "._new.docx", "a.crdownload", "b.part", "c.download", "d.pdf.downloading", "~$报告.docx", ".hidden", "e.tmp", "f.sb-1a2b-x"] { w(n) }
+let j0 = Date().addingTimeInterval(10)
+_ = o.scan(now: j0)
+check("outbox: hidden / partial / temp files skipped", o.scan(now: j0.addingTimeInterval(5)).isEmpty)
+// finished browser download renamed to its real name is new
+try! fm.moveItem(at: ob.appendingPathComponent("a.crdownload"), to: ob.appendingPathComponent("下载完成.zip"))
+let r0 = Date().addingTimeInterval(10); _ = o.scan(now: r0)
+check("outbox: .crdownload renamed when finished -> sent", o.scan(now: r0.addingTimeInterval(4)).map { $0.lastPathComponent } == ["下载完成.zip"])
+// files SyncHub itself writes (auto-receive / menu download) are never sent
+o.ignore(ob.appendingPathComponent("来自Windows.pdf")); w("来自Windows.pdf")
+let i0 = Date().addingTimeInterval(10); _ = o.scan(now: i0)
+check("outbox: received file (ignore) not sent back", o.scan(now: i0.addingTimeInterval(5)).isEmpty && o.knownNames.contains("来自Windows.pdf"))
+o.ignore(URL(fileURLWithPath: "/somewhere/else/x.pdf"))   // other folders: no effect
+// folders: sent (as zip by the upload queue) once all contents are stable
+try! fm.createDirectory(at: ob.appendingPathComponent("照片文件夹/sub"), withIntermediateDirectories: true)
+try! Data(count: 50).write(to: ob.appendingPathComponent("照片文件夹/sub/1.jpg"))
+let f0 = Date().addingTimeInterval(10); _ = o.scan(now: f0)
+try! Data(count: 70).write(to: ob.appendingPathComponent("照片文件夹/2.jpg"))
+check("outbox: folder still being filled waits", o.scan(now: f0.addingTimeInterval(4)).isEmpty)
+check("outbox: folder sent when stable", o.scan(now: f0.addingTimeInterval(8)).map { $0.lastPathComponent } == ["照片文件夹"])
+check("outbox: folder signature counts contents", o.signature(ob.appendingPathComponent("照片文件夹"))?.size ?? 0 >= 120)
+// persisted index: a restart doesn't resend; files added while not running are sent
+o = FolderOutbox(dir: ob, indexURL: obIdx)
+w("while_quit.key", 33)
+let q0 = Date().addingTimeInterval(10); _ = o.scan(now: q0)
+check("outbox: after restart only files added meanwhile are sent", o.scan(now: q0.addingTimeInterval(4)).map { $0.lastPathComponent } == ["while_quit.key"])
+// delete + put back = new again
+try! fm.removeItem(at: ob.appendingPathComponent("new.docx")); _ = o.scan(now: Date().addingTimeInterval(10)); w("new.docx", 100)
+let d0 = Date().addingTimeInterval(10); _ = o.scan(now: d0)
+check("outbox: deleted then placed again -> sent again", o.scan(now: d0.addingTimeInterval(4)).map { $0.lastPathComponent } == ["new.docx"])
+// overwrite in place is not re-sent
+w("old1.pdf", 999); let ov = Date().addingTimeInterval(10); _ = o.scan(now: ov)
+check("outbox: file overwritten in place not re-sent", o.scan(now: ov.addingTimeInterval(5)).isEmpty)
+// reset (toggle on again / other folder) = new baseline
+w("while_off.txt"); o.reset()
+check("outbox: reset records current files as baseline", o.scan(now: Date().addingTimeInterval(10)).isEmpty && o.scan(now: Date().addingTimeInterval(20)).isEmpty)
+let other = work.appendingPathComponent("outbox2"); try! fm.createDirectory(at: other, withIntermediateDirectories: true)
+try! Data(count: 3).write(to: other.appendingPathComponent("x.txt"))
+let o2 = FolderOutbox(dir: other, indexURL: obIdx)
+check("outbox: index of another folder -> baseline, nothing sent", o2.scan(now: Date().addingTimeInterval(10)).isEmpty && o2.scan(now: Date().addingTimeInterval(20)).isEmpty)
+check("outbox: name rules", FolderOutbox.isCandidateName("a.pdf") && FolderOutbox.isCandidateName("报告 (1).docx") && !FolderOutbox.isCandidateName("x.PART") && !FolderOutbox.isCandidateName("Thumbs.db"))
+
+// 1.1.3: Finder ⌘C plans
+let cp = work.appendingPathComponent("copy"); try! fm.createDirectory(at: cp.appendingPathComponent("dir"), withIntermediateDirectories: true)
+try! Data(count: 1000).write(to: cp.appendingPathComponent("one.pdf")); try! Data(count: 500).write(to: cp.appendingPathComponent("two.png"))
+try! Data(count: 300).write(to: cp.appendingPathComponent("dir/in.txt"))
+let one = cp.appendingPathComponent("one.pdf"), two = cp.appendingPathComponent("two.png"), dir1 = cp.appendingPathComponent("dir")
+check("plan: one file -> shared clipboard", ClipFilePlan.make([one], maxBytes: 5000) == .clipboard(one, size: 1000))
+check("plan: two files -> upload", ClipFilePlan.make([one, two], maxBytes: 5000) == .upload([one, two], total: 1500))
+check("plan: folder -> upload", ClipFilePlan.make([dir1], maxBytes: 5000) == .upload([dir1], total: 300))
+if case .tooLarge = ClipFilePlan.make([one, two], maxBytes: 1200) { check("plan: over limit -> tooLarge", true) } else { check("plan: over limit", false) }
+check("plan: missing -> none", ClipFilePlan.make([cp.appendingPathComponent("gone")], maxBytes: 5000) == .none && ClipFilePlan.make([], maxBytes: 1) == .none)
+let sg = ClipFilePlan.signature([one]); try! Data(count: 1001).write(to: one)
+check("plan: signature changes when the file changes", sg == sg && ClipFilePlan.signature([one]) != sg)
+
+// 1.1.3: own clipboard pushes are not downloaded back
+func item(_ json: String) -> HubItem { try! JSONDecoder().decode(HubItem.self, from: Data(json.utf8)) }
+let ownP = OwnClipPushes()
+ownP.note(name: "报告.zip", size: 1234)
+check("echo: own clipboard file in history (Clipboard) is skipped", ownP.matches(item(#"{"id":1,"type":1,"filename":"报告.zip","size":1234,"fromDevice":"Clipboard"}"#)))
+check("echo: same name from Windows (hub upload) is not skipped", !ownP.matches(item(#"{"id":2,"type":1,"filename":"报告.zip","size":1234,"fromDevice":"Windows"}"#)))
+check("echo: different size not skipped", !ownP.matches(item(#"{"id":3,"type":1,"filename":"报告.zip","size":99,"fromDevice":"Clipboard"}"#)))
+check("echo: expires", !ownP.matches(item(#"{"id":4,"type":1,"filename":"报告.zip","size":1234,"fromDevice":"Clipboard"}"#), now: Date().addingTimeInterval(4000)))
+
+// receiver hooks against the local server: skip + willSave (so the folder watcher ignores received files)
+let rdir = work.appendingPathComponent("recv113"); try! fm.createDirectory(at: rdir, withIntermediateDirectories: true)
+let rob = FolderOutbox(dir: rdir, indexURL: work.appendingPathComponent("support/ob113.json"))
+let r4 = HubAutoReceiver(stateURL: work.appendingPathComponent("st113.json"), clientProvider: { mac }, directoryProvider: { rdir })
+wait { (d: @escaping (()) -> Void) in r4.pollOnce { d(()) } }        // baseline
+let _: Result<HubItem?, HubError> = wait { c in _ = win.upload(fileURL: makeFile("skip_me.bin", 2000), progress: { _, _ in }, completion: c) }
+let _: Result<HubItem?, HubError> = wait { c in _ = win.upload(fileURL: makeFile("keep_me.bin", 3000), progress: { _, _ in }, completion: c) }
+var saving4: [String] = []
+r4.skip = { $0.filename == "skip_me.bin" }
+r4.willSave = { u in saving4.append(u.lastPathComponent); rob.ignore(u) }
+var got4: [String] = []
+r4.onReceived = { _, u in got4.append(u.lastPathComponent) }
+wait { (d: @escaping (()) -> Void) in r4.pollOnce { d(()) } }
+check("receiver: skip hook leaves the item alone \(got4)", got4 == ["keep_me.bin"] && !fm.fileExists(atPath: rdir.appendingPathComponent("skip_me.bin").path))
+check("receiver: willSave announced the final path first", saving4 == ["keep_me.bin"])
+let rr = Date().addingTimeInterval(10); _ = rob.scan(now: rr)
+check("receiver + outbox: received file is not auto-sent back", rob.scan(now: rr.addingTimeInterval(5)).isEmpty)
 
 print(fails == 0 ? "ALL PASSED" : "\(fails) FAILED")
 exit(fails == 0 ? 0 : 1)

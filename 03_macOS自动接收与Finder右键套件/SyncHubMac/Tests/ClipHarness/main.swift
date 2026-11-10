@@ -247,6 +247,23 @@ do {
 }
 check("logs never contain clipboard text", !logs.contains { $0.contains("USER-COPY") || $0.contains("STALE-OLD") })
 
+// 1.1.3: a file copied in Finder -> SyncClipboard "File"
+let fdata = Data("PK fake zip 文件内容".utf8)
+if case .success(.pushed(let h)) = wait({ eng.onLocalFile(name: "报告 v2.zip", data: fdata, $0) }) {
+    let c = ClipHash.sha256Hex(fdata)
+    check("file push: PUT /file + profile File", mem.files["报告 v2.zip"] == fdata && mem.profile.type == "File" && mem.profile.dataName == "报告 v2.zip"
+          && mem.profile.text == "报告 v2.zip" && mem.profile.hasData && mem.profile.size == Int64(fdata.count)
+          && mem.profile.transferDataHash == c && h == ClipHash.fileProfile(name: "报告 v2.zip", contentHash: c))
+} else { check("file push", false) }
+if case .success(nil) = poll(eng) { check("own file push not echoed", true) } else { check("own file echo", false) }
+if case .success(.skipped) = wait({ eng.onLocalFile(name: "报告 v2.zip", data: fdata, $0) }) { check("same file again -> skipped", true) } else { check("file dedupe", false) }
+let bigFile = Data(count: Int(ClipSyncEngine.maxFileBytes) + 1)
+if case .success(.skipped(let why)) = wait({ eng.onLocalFile(name: "big.bin", data: bigFile, $0) }) { check("file over 100 MB skipped (\(why))", why.contains("超过")) } else { check("big file", false) }
+mem.failNext = .network("offline")
+if case .failure = wait({ eng.onLocalFile(name: "b.txt", data: Data("b".utf8), $0) }) {
+    if case .success(.pushed) = wait({ eng.onLocalFile(name: "b.txt", data: Data("b".utf8), $0) }) { check("file push retried after failure", mem.profile.dataName == "b.txt") } else { check("file retry", false) }
+} else { check("file push failure", false) }
+
 // MARK: 5. HTTP transport against the local mock server
 let args = CommandLine.arguments
 if args.count >= 4 {
@@ -288,6 +305,17 @@ if args.count >= 4 {
         let f: Result<Data, HubError> = wait { http.getFile("Text_HTTP.txt", maxBytes: 1 << 20, $0) }
         if case .success(let d) = f { check("HTTP: long text stored as /file/Text_*.txt", d == Data(longT.utf8)) } else { check("HTTP long", false) }
     } else { check("HTTP long push", false) }
+
+    let fd2 = Data((0..<70000).map { UInt8($0 % 253) })
+    let fn2 = "Mac 复制的文件 #1 (2).pdf"
+    if case .success(.pushed) = wait({ he.onLocalFile(name: fn2, data: fd2, $0) }) {
+        let raw: Result<ClipProfile, HubError> = wait { http.getProfile($0) }
+        let f: Result<Data, HubError> = wait { http.getFile(fn2, maxBytes: 1 << 20, $0) }
+        if case .success(let p) = raw, case .success(let d) = f {
+            check("HTTP: Finder file -> /file/{name} + profile File", p.type == "File" && p.dataName == fn2 && p.hasData && d == fd2
+                  && p.hash == ClipHash.fileProfile(name: fn2, contentHash: ClipHash.sha256Hex(fd2)))
+        } else { check("HTTP file get", false) }
+    } else { check("HTTP file push", false) }
 
     let dead = ClipSyncEngine(transport: SyncClipboardHTTP(config: HubConfig(baseURL: "http://127.0.0.1:1")), state: MemoryClipState("X"))
     if case .failure(.network) = wait({ dead.pollRemote($0) }) { check("HTTP: unreachable server -> .network (loop backs off, keeps going)", true) } else { check("HTTP dead", false) }

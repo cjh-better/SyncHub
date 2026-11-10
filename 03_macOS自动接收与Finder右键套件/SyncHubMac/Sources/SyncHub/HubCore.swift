@@ -313,7 +313,7 @@ final class HubClient: NSObject, URLSessionDataDelegate {
         c.timeoutIntervalForRequest = 20
         c.timeoutIntervalForResource = 60
         c.requestCachePolicy = .reloadIgnoringLocalCacheData
-        c.httpAdditionalHeaders = ["User-Agent": "SyncHub-Mac/1.1.2"]
+        c.httpAdditionalHeaders = ["User-Agent": "SyncHub-Mac/1.1.3"]
         return URLSession(configuration: c)
     }()
     /// Large transfers: long resource timeout (server allows up to 1 GB, nginx read timeout 3600 s).
@@ -321,7 +321,7 @@ final class HubClient: NSObject, URLSessionDataDelegate {
         let c = URLSessionConfiguration.ephemeral
         c.timeoutIntervalForRequest = 120
         c.timeoutIntervalForResource = 4 * 3600
-        c.httpAdditionalHeaders = ["User-Agent": "SyncHub-Mac/1.1.2"]
+        c.httpAdditionalHeaders = ["User-Agent": "SyncHub-Mac/1.1.3"]
         return URLSession(configuration: c, delegate: self, delegateQueue: delegateQueue)
     }()
 
@@ -468,7 +468,7 @@ final class HubClient: NSObject, URLSessionDataDelegate {
         let session = URLSession(configuration: {
             let c = URLSessionConfiguration.ephemeral
             c.timeoutIntervalForRequest = 120; c.timeoutIntervalForResource = 4 * 3600
-            c.httpAdditionalHeaders = ["User-Agent": "SyncHub-Mac/1.1.2"]
+            c.httpAdditionalHeaders = ["User-Agent": "SyncHub-Mac/1.1.3"]
             return c
         }())
         let task = session.downloadTask(with: req) { tmp, resp, err in
@@ -530,6 +530,10 @@ final class HubAutoReceiver {
     var onReceived: ((HubItem, URL) -> Void)?
     /// Called after each poll: success(count of saved files) or failure.
     var onPoll: ((Result<Int, HubError>) -> Void)?
+    /// Items to leave alone (e.g. this Mac's own clipboard file coming back from the history). Background queue.
+    var skip: ((HubItem) -> Bool)?
+    /// Called (background queue) with the final path just before a received file appears there.
+    var willSave: ((URL) -> Void)?
 
     private let queue = DispatchQueue(label: "synchub.receiver")
     private var busy = false
@@ -601,6 +605,10 @@ final class HubAutoReceiver {
             finish(.success(saved), done); return
         }
         let rest = Array(items.dropFirst())
+        if skip?(item) == true {
+            lastId = max(lastId, item.id)
+            process(items: rest, client: client, latest: latest, saved: saved, done: done); return
+        }
         guard item.downloadUrl != nil else {
             process(items: rest, client: client, latest: latest, saved: saved, done: done); return
         }
@@ -627,6 +635,7 @@ final class HubAutoReceiver {
                     do {
                         try? self.fm.removeItem(at: part)
                         try self.fm.moveItem(at: tmp, to: part)
+                        self.willSave?(finalDest)
                         try self.fm.moveItem(at: part, to: finalDest)
                     } catch {
                         try? self.fm.removeItem(at: tmp)

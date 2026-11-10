@@ -15,6 +15,8 @@ struct SettingsView: View {
     @State private var login = true
     @State private var clipSync = true
     @State private var clipImages = true
+    @State private var clipFiles = true
+    @State private var autoSend = true
     @State private var testing = false
     @State private var testResult: (ok: Bool, text: String)?
     @State private var client: HubClient?
@@ -50,6 +52,7 @@ struct SettingsView: View {
 
             section("自动接收") {
                 row("") { Toggle("自动下载其他设备发来的文件", isOn: $autoReceive) }
+                row("") { Toggle("自动发送放进这个文件夹的新文件", isOn: $autoSend) }
                 row("保存到") {
                     HStack(spacing: 8) {
                         Text((dir as NSString).abbreviatingWithTildeInPath)
@@ -66,8 +69,9 @@ struct SettingsView: View {
             section("剪贴板同步") {
                 row("") { Toggle("自动同步剪贴板（在 Mac、Windows、手机之间）", isOn: $clipSync) }
                 row("") { Toggle("同时同步图片和截图（20 MB 以内）", isOn: $clipImages).disabled(!clipSync) }
+                row("") { Toggle("同步在 Finder 中复制的文件（100 MB 以内）", isOn: $clipFiles).disabled(!clipSync) }
                 row("") {
-                    Text("复制的文字会自动出现在其他设备上，反过来也一样。密码管理器复制的密码不会同步；超过 500 KB 的文字会跳过。")
+                    Text("复制的文字会自动出现在其他设备上，反过来也一样。在 Finder 里复制单个文件，Windows 上可以直接粘贴；复制多个文件或文件夹会发送到其他设备的传输文件夹。密码管理器复制的密码不会同步；超过 500 KB 的文字会跳过。")
                         .font(.system(size: 11)).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -112,6 +116,7 @@ struct SettingsView: View {
         autoReceive = settings.autoReceive; dir = settings.receiveDir
         notify = settings.notifications; login = settings.launchAtLogin
         clipSync = settings.clipSync; clipImages = settings.clipImages
+        clipFiles = settings.clipFiles; autoSend = settings.autoSendFolder
     }
 
     private func test() {
@@ -149,6 +154,8 @@ struct SettingsView: View {
         settings.launchAtLogin = login
         settings.clipSync = clipSync
         settings.clipImages = clipImages
+        settings.clipFiles = clipFiles
+        settings.autoSendFolder = autoSend
         settings.save(password: pass)
         if loginChanged || settings.isFirstRun { LoginItem.set(login) }
         settings.markFirstRunDone()

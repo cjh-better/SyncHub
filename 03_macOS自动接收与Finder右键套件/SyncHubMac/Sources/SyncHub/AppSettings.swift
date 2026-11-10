@@ -11,7 +11,7 @@ final class AppSettings: ObservableObject {
     private enum K {
         static let server = "serverURL", user = "username", auto = "autoReceive", dir = "receiveDir"
         static let notify = "notifications", login = "launchAtLogin", firstRun = "didFirstRun", interval = "pollSeconds"
-        static let clip = "clipSync", clipImages = "clipImages"
+        static let clip = "clipSync", clipImages = "clipImages", clipFiles = "clipFiles", autoSend = "autoSendFolder"
     }
 
     @Published var serverURL: String
@@ -24,6 +24,10 @@ final class AppSettings: ObservableObject {
     @Published var clipSync: Bool
     /// Also sync copied images / screenshots (only when clipSync is on).
     @Published var clipImages: Bool
+    /// Also sync files copied in Finder (one file ≤ 100 MB → Windows clipboard; several files / a folder → sent).
+    @Published var clipFiles: Bool
+    /// Automatically send new files placed in the transfer folder (receiveDir) to the other devices.
+    @Published var autoSendFolder: Bool
     /// Cached in memory so the 3-second poll never hits the Keychain.
     private(set) var password: String
 
@@ -34,7 +38,7 @@ final class AppSettings: ObservableObject {
         let d = UserDefaults.standard
         d.register(defaults: [K.server: AppSettings.defaultServer, K.user: "", K.auto: true,
                               K.dir: AppSettings.defaultReceiveDir, K.notify: true, K.login: true, K.interval: 3.0,
-                              K.clip: true, K.clipImages: true])
+                              K.clip: true, K.clipImages: true, K.clipFiles: true, K.autoSend: true])
         let user = d.string(forKey: K.user) ?? ""
         serverURL = d.string(forKey: K.server) ?? AppSettings.defaultServer
         username = user
@@ -44,6 +48,8 @@ final class AppSettings: ObservableObject {
         launchAtLogin = d.bool(forKey: K.login)
         clipSync = d.bool(forKey: K.clip)
         clipImages = d.bool(forKey: K.clipImages)
+        clipFiles = d.bool(forKey: K.clipFiles)
+        autoSendFolder = d.bool(forKey: K.autoSend)
         password = user.isEmpty ? "" : (Keychain.read(account: user) ?? "")
     }
 
@@ -69,6 +75,8 @@ final class AppSettings: ObservableObject {
         d.set(launchAtLogin, forKey: K.login)
         d.set(clipSync, forKey: K.clip)
         d.set(clipImages, forKey: K.clipImages)
+        d.set(clipFiles, forKey: K.clipFiles)
+        d.set(autoSendFolder, forKey: K.autoSend)
         if !oldUser.isEmpty && oldUser != user { Keychain.delete(account: oldUser) }
         if let p = newPassword {
             if user.isEmpty { password = "" }
@@ -82,6 +90,11 @@ final class AppSettings: ObservableObject {
     func setAutoReceive(_ on: Bool) {
         autoReceive = on; d.set(on, forKey: K.auto)
         NotificationCenter.default.post(name: .settingsChanged, object: nil)
+    }
+
+    /// Menu toggle; AppDelegate restarts the folder watcher itself (no full settings reload needed).
+    func setAutoSendFolder(_ on: Bool) {
+        autoSendFolder = on; d.set(on, forKey: K.autoSend)
     }
 
     func setClipSync(_ on: Bool) {

@@ -172,10 +172,10 @@ final class SyncClipboardHTTP: ClipTransport {
         self.config = config
         let c = URLSessionConfiguration.ephemeral
         c.timeoutIntervalForRequest = 15
-        c.timeoutIntervalForResource = 120
+        c.timeoutIntervalForResource = 900       // copied Finder files up to 100 MB
         c.requestCachePolicy = .reloadIgnoringLocalCacheData
         c.urlCache = nil
-        c.httpAdditionalHeaders = ["User-Agent": "SyncHub-Mac/1.1.2"]
+        c.httpAdditionalHeaders = ["User-Agent": "SyncHub-Mac/1.1.3"]
         session = URLSession(configuration: c)
     }
 
@@ -302,6 +302,8 @@ final class ClipSyncEngine {
     let state: ClipStateStore
     var maxTextBytes: Int = 500 * 1024
     var maxImageBytes: Int64 = 20 * 1024 * 1024
+    /// Files copied in Finder go onto the shared clipboard up to this size (Windows SyncClipboard allows 1 GB).
+    static let maxFileBytes: Int64 = 100 * 1024 * 1024
     var pullImages: () -> Bool = { true }
     var log: (String) -> Void = { _ in }
     /// For tests: fixed name generator.
@@ -423,6 +425,45 @@ final class ClipSyncEngine {
                         }
                     }
                 }
+                switch r {
+                case .failure(let e): done(.failure(e))
+                case .success: self.transport.putProfile(p, done)
+                }
+            }
+        }
+    }
+
+    /// A single file copied in Finder: PUT /file/<name>, then SyncClipboard.json {"type":"File"} — the official
+    /// Windows / Android clients download it and put it on their clipboard (paste in Explorer).
+    func onLocalFile(name: String, data: Data, _ completion: @escaping (Result<ClipLocalResult, HubError>) -> Void) {
+        queue.async {
+            if Int64(data.count) > ClipSyncEngine.maxFileBytes {
+                completion(.success(.skipped("文件超过 \(HubFormat.bytes(ClipSyncEngine.maxFileBytes))，未同步"))); return
+            }
+            let content = ClipHash.sha256Hex(data)
+            let ckey = "FILE:" + content
+            if self.current == ckey { completion(.success(.skipped("与已同步文件相同"))); return }
+            self.current = ckey
+            self.pushing += 1; self.pushGeneration += 1
+            let hash = ClipHash.fileProfile(name: name, contentHash: content)
+            let p = ClipProfile(type: "File", hash: hash, text: name, hasData: true, dataName: name,
+                                transferDataHash: content, size: Int64(data.count))
+            let done: (Result<Void, HubError>) -> Void = { r in
+                self.queue.async {
+                    self.pushing -= 1
+                    switch r {
+                    case .success:
+                        self.state.lastRemoteKey = hash
+                        self.state.lastRemoteContent = ckey
+                        self.log("已推送文件 \(name)（\(HubFormat.bytes(Int64(data.count)))）")
+                        completion(.success(.pushed(hash: hash)))
+                    case .failure(let e):
+                        if self.current == ckey { self.current = nil }
+                        completion(.failure(e))
+                    }
+                }
+            }
+            self.transport.putFile(name, data) { r in
                 switch r {
                 case .failure(let e): done(.failure(e))
                 case .success: self.transport.putProfile(p, done)
