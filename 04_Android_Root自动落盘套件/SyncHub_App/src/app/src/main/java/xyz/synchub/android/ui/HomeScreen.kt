@@ -3,8 +3,16 @@ package xyz.synchub.android.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.widget.Toast
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -48,7 +56,10 @@ import xyz.synchub.android.sync.Storage
 import xyz.synchub.android.sync.SyncService
 import xyz.synchub.android.sync.TransferNotifier
 import xyz.synchub.android.sync.TransferService
+import xyz.synchub.android.sync.AutoReceiver
 import xyz.synchub.android.util.ClipMode
+import xyz.synchub.android.util.FileOpener
+import java.io.File
 import xyz.synchub.android.util.Prefs
 import xyz.synchub.android.util.RuntimeStatus
 import xyz.synchub.android.util.Status
@@ -56,7 +67,7 @@ import xyz.synchub.android.xposed.ModuleStatus
 
 /** 与电脑端一样的单页状态：已连接 / 同步中 / 自动接收，下面是最近条目。 */
 @Composable
-fun HomeScreen(act: MainActivity, onSettings: () -> Unit) {
+fun HomeScreen(act: MainActivity, onSettings: () -> Unit, onReceived: () -> Unit = {}) {
     val prefs = remember { Prefs.get(act) }
     val st by Status.flow.collectAsState()
     val scope = rememberCoroutineScope()
@@ -65,6 +76,8 @@ fun HomeScreen(act: MainActivity, onSettings: () -> Unit) {
     var storage by remember { mutableStateOf<HubStorage?>(null) }
     var loading by remember { mutableStateOf(false) }
     var running by remember { mutableStateOf(prefs.serviceEnabled) }
+    var local by remember { mutableStateOf<Map<Long, File>>(emptyMap()) }
+    var viewText by remember { mutableStateOf<HubItem?>(null) }
     val module = remember { ModuleStatus.isActive() }
 
     fun refresh() {
@@ -73,6 +86,8 @@ fun HomeScreen(act: MainActivity, onSettings: () -> Unit) {
             val r = withContext(Dispatchers.IO) { runCatching { HubClient(prefs.server()).listItems(60) } }
             r.onSuccess { items = it.hubOrder(); loadErr = null }.onFailure { loadErr = it.message }
             loading = false
+            // 哪些文件已经在本机接收文件夹里（同名同大小）：显示“打开”，否则“下载”
+            local = withContext(Dispatchers.IO) { localCopies(act, items) }
             // 存储信息只是辅助显示：失败时保留上次结果，不报错
             withContext(Dispatchers.IO) { runCatching { HubClient(prefs.server()).storage() } }.onSuccess { storage = it }
         }
@@ -87,8 +102,59 @@ fun HomeScreen(act: MainActivity, onSettings: () -> Unit) {
         serverUrl = prefs.serverUrl, autoReceive = prefs.autoReceive, saveDir = remember { Storage.sink(act).displayDir },
         onSettings = onSettings, onRefresh = { refresh() },
         onToggle = { if (running) { SyncService.stop(act); running = false } else { SyncService.start(act); running = true } },
-        onItem = { onItemTap(act, it) },
-        storage = storage,
+        onItem = { it2, action ->
+            when (action) {
+                ItemAction.OPEN -> if (it2.isText) viewText = it2 else openItem(act, it2, local[it2.id])
+                ItemAction.COPY -> copyText(act, it2.text)
+                ItemAction.SHARE -> local[it2.id]?.let { f -> FileOpener.share(act, f) }
+                    ?: Toast.makeText(act, "请先下载到本机", Toast.LENGTH_SHORT).show()
+                ItemAction.SHOW_IN_FOLDER -> onReceived()
+                ItemAction.DOWNLOAD -> { TransferService.download(act, it2); Toast.makeText(act, "开始下载 ${it2.filename}", Toast.LENGTH_SHORT).show() }
+            }
+        },
+        storage = storage, localIds = local.keys, onReceived = onReceived,
+    )
+    viewText?.let { t -> TextViewDialog(t.text, onCopy = { copyText(act, t.text) }, onDismiss = { viewText = null }) }
+}
+
+enum class ItemAction { OPEN, COPY, SHARE, SHOW_IN_FOLDER, DOWNLOAD }
+
+private fun localCopies(ctx: android.content.Context, items: List<HubItem>): Map<Long, File> {
+    val dir = FileOpener.receiveDir(ctx)
+    val m = HashMap<Long, File>()
+    for (it in items) if (!it.isText) FileOpener.findLocal(dir, AutoReceiver.sanitize(it.filename), it.size)?.let { f -> m[it.id] = f }
+    return m
+}
+
+private fun copyText(act: MainActivity, text: String) {
+    act.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("SyncHub", text))
+    Toast.makeText(act, "已复制", Toast.LENGTH_SHORT).show()
+}
+
+/** 文件：本机有 → 直接用系统应用打开；没有 → OpenFileActivity 带登录下载（显示进度）后打开。 */
+private fun openItem(act: MainActivity, it: HubItem, localFile: File?) {
+    when {
+        localFile != null -> FileOpener.open(act, localFile)
+        it.downloadUrl != null && it.hasFile -> act.startActivity(OpenFileActivity.forItem(act, it))
+        else -> Toast.makeText(act, "文件已不在服务器上", Toast.LENGTH_SHORT).show()
+    }
+}
+
+/** 查看完整文字（可选择复制）。 */
+@Composable
+fun TextViewDialog(text: String, onCopy: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Mac.Card,
+        shape = RoundedCornerShape(14.dp),
+        title = { Text("文字内容", color = Mac.Text, fontSize = 16.sp, fontWeight = FontWeight.SemiBold) },
+        text = {
+            Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
+                SelectionContainer { Text(text, color = Mac.Text, fontSize = 15.sp, lineHeight = 22.sp) }
+            }
+        },
+        confirmButton = { LinkButton("复制") { onCopy(); onDismiss() } },
+        dismissButton = { LinkButton("关闭", color = Mac.Text2) { onDismiss() } },
     )
 }
 
@@ -97,8 +163,8 @@ fun HomeScreen(act: MainActivity, onSettings: () -> Unit) {
 fun HomeContent(
     st: RuntimeStatus, items: List<HubItem>, loadErr: String?, loading: Boolean, running: Boolean, module: Boolean,
     rootLabel: String, rootOk: Boolean, serverUrl: String, autoReceive: Boolean, saveDir: String,
-    onSettings: () -> Unit, onRefresh: () -> Unit, onToggle: () -> Unit, onItem: (HubItem) -> Unit,
-    storage: HubStorage? = null,
+    onSettings: () -> Unit, onRefresh: () -> Unit, onToggle: () -> Unit, onItem: (HubItem, ItemAction) -> Unit,
+    storage: HubStorage? = null, localIds: Set<Long> = emptySet(), onReceived: () -> Unit = {},
 ) {
     Column(Modifier.fillMaxSize().background(Mac.Bg).systemBarsPadding()) {
         TopBar("SyncHub", right = { LinkButton("设置") { onSettings() } })
@@ -146,6 +212,10 @@ fun HomeContent(
                     if (running) LinkButton("停止同步", color = Mac.Red) { onToggle() }
                     else PrimaryButton("开始同步") { onToggle() }
                 }
+                Spacer(Modifier.height(8.dp))
+                MacCard(Modifier.padding(horizontal = 16.dp)) {
+                    ActionRow("已接收文件", sub = saveDir.replace("/storage/emulated/0", "手机存储"), color = Mac.Text) { onReceived() }
+                }
                 if (storage != null) {
                     SectionTitle("存储空间")
                     MacCard(Modifier.padding(horizontal = 16.dp)) { StorageBlock(storage) }
@@ -166,7 +236,7 @@ fun HomeContent(
                     bottomStart = if (i == items.lastIndex) r else 0.dp, bottomEnd = if (i == items.lastIndex) r else 0.dp)
                 Column(Modifier.padding(horizontal = 16.dp).background(Mac.Card, shape)) {
                     if (i > 0) Hairline(12)
-                    ItemRow(it) { onItem(it) }
+                    ItemRow(it, local = it.id in localIds) { a -> onItem(it, a) }
                 }
             }
             item { Spacer(Modifier.height(32.dp)) }
@@ -174,19 +244,13 @@ fun HomeContent(
     }
 }
 
-private fun onItemTap(act: MainActivity, it: HubItem) {
-    if (it.isText) {
-        act.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("SyncHub", it.text))
-        Toast.makeText(act, "已复制", Toast.LENGTH_SHORT).show()
-    } else if (it.downloadUrl != null && it.hasFile) {
-        TransferService.download(act, it)
-        Toast.makeText(act, "开始下载 ${it.filename}", Toast.LENGTH_SHORT).show()
-    } else Toast.makeText(act, "文件已不在服务器上", Toast.LENGTH_SHORT).show()
-}
-
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ItemRow(it: HubItem, onClick: () -> Unit) {
-    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 12.dp, vertical = 10.dp),
+private fun ItemRow(it: HubItem, local: Boolean, onAction: (ItemAction) -> Unit) {
+    var menu by remember { mutableStateOf(false) }
+    Box {
+    Row(Modifier.fillMaxWidth().combinedClickable(onClick = { onAction(ItemAction.OPEN) }, onLongClick = { menu = true })
+        .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically) {
         // 不再显示类型图标（与网页端一致）；文件类型以扩展名文字放在说明行里
         Column(Modifier.weight(1f)) {
@@ -203,7 +267,17 @@ private fun ItemRow(it: HubItem, onClick: () -> Unit) {
             }
             Text(meta, color = Mac.Text2, fontSize = 12.sp, maxLines = 1)
         }
-        Text(if (it.isText) "复制" else "下载", color = Mac.Accent, fontSize = 13.sp)
+        val apk = !it.isText && FileOpener.isApk(it.filename)
+        Text(when { it.isText -> "查看"; !local -> "下载"; apk -> "安装"; else -> "打开" }, color = Mac.Accent, fontSize = 13.sp)
+    }
+    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+        val entries = if (it.isText) listOf("查看全文" to ItemAction.OPEN, "复制" to ItemAction.COPY)
+            else listOfNotNull(
+                (if (local) "打开" else "下载并打开") to ItemAction.OPEN,
+                if (local) "分享" to ItemAction.SHARE else "仅下载到本机" to ItemAction.DOWNLOAD,
+                "在文件夹中显示" to ItemAction.SHOW_IN_FOLDER)
+        entries.forEach { (t, a) -> DropdownMenuItem(text = { Text(t) }, onClick = { menu = false; onAction(a) }) }
+    }
     }
 }
 

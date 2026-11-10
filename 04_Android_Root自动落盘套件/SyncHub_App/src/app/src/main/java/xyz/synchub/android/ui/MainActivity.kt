@@ -20,7 +20,7 @@ import xyz.synchub.android.util.ClipMode
 import xyz.synchub.android.util.Prefs
 import xyz.synchub.android.util.Status
 
-enum class Screen { Onboarding, Home, Settings, Logs }
+enum class Screen { Onboarding, Home, Settings, Logs, Received }
 
 class MainActivity : ComponentActivity() {
     private var screen by mutableStateOf(Screen.Home)
@@ -36,7 +36,8 @@ class MainActivity : ComponentActivity() {
             SyncHubTheme {
                 when (screen) {
                     Screen.Onboarding -> OnboardingScreen(this, onDone = { screen = Screen.Home })
-                    Screen.Home -> HomeScreen(this, onSettings = { screen = Screen.Settings })
+                    Screen.Home -> HomeScreen(this, onSettings = { screen = Screen.Settings }, onReceived = { screen = Screen.Received })
+                    Screen.Received -> ReceivedScreen(this, onBack = { screen = Screen.Home })
                     Screen.Settings -> SettingsScreen(this, onBack = { screen = Screen.Home },
                         onLogs = { screen = Screen.Logs }, onRerunSetup = { screen = Screen.Onboarding })
                     Screen.Logs -> LogsScreen(onBack = { screen = Screen.Settings })
@@ -51,6 +52,7 @@ class MainActivity : ComponentActivity() {
         when (screen) {
             Screen.Settings -> screen = Screen.Home
             Screen.Logs -> screen = Screen.Settings
+            Screen.Received -> screen = Screen.Home
             else -> @Suppress("DEPRECATION") super.onBackPressed()
         }
     }

@@ -26,8 +26,18 @@ object Notifs {
         ))
     }
 
-    fun openApp(ctx: Context): PendingIntent = PendingIntent.getActivity(ctx, 0,
-        Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+    const val ID_TRANSFER_FG = 3     // TransferService 前台通知（以前误用了 2，与“剪贴板权限”提示冲突）
+    const val RC_OPEN_APP = 100
+
+    /** 点通知打开 App 首页（直接 getActivity，没有跳板）。 */
+    fun openApp(ctx: Context): PendingIntent = PendingIntent.getActivity(ctx, RC_OPEN_APP,
+        Intent(ctx, MainActivity::class.java).setAction(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+
+    /** 点通知打开某个文件：先进入本应用的 OpenFileActivity（Activity，不是跳板），由它检查文件 / 权限后启动查看器。 */
+    fun openFile(ctx: Context, requestCode: Int, path: String): PendingIntent = PendingIntent.getActivity(ctx, requestCode,
+        xyz.synchub.android.ui.OpenFileActivity.forPath(ctx, path),
         PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
 
     fun builder(ctx: Context, ch: String) = NotificationCompat.Builder(ctx, ch)

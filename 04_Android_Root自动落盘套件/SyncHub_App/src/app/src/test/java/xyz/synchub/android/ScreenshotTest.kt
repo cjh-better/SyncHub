@@ -41,11 +41,39 @@ class ScreenshotTest {
         compose.setContent {
             SyncHubTheme {
                 HomeContent(st, items, null, false, true, false, "已授权", true, "https://020814.xyz", true,
-                    "/storage/emulated/0/Download/跨端传输", {}, {}, {}, {},
+                    "/storage/emulated/0/Download/跨端传输", {}, {}, {}, { _, _ -> },
                     storage = xyz.synchub.android.net.HubStorage(63_290_085_376, 11_433_066_496, 48_619_253_760, 262_000_000))
             }
         }
         save("home")
+    }
+
+    @Test fun received() {
+        val dir = java.nio.file.Files.createTempDirectory("rcv").toFile()
+        val now = 1_794_300_000_000L
+        val files = listOf("SyncHub_1.0.4.apk" to 2_600_000, "SyncHub_Mac套件_1.1.1.zip" to 142_386, "2026Q4_项目周报.pdf" to 2_400_000,
+            "截图_2026-11-08.png" to 380_000).mapIndexed { i, (n, sz) ->
+            File(dir, n).apply { writeBytes(ByteArray(sz)); setLastModified(now - i * 3_600_000L) } }
+        compose.setContent {
+            SyncHubTheme {
+                xyz.synchub.android.ui.ReceivedContent("/storage/emulated/0/Download/跨端传输", files, true, {}, {}, {}, {}, now = now)
+            }
+        }
+        save("received")
+    }
+
+    @Test fun textDialog() {
+        compose.setContent {
+            SyncHubTheme {
+                xyz.synchub.android.ui.TextViewDialog("会议纪要：周三下午 3 点评审 UI 改版方案。\n\n1. 首页去掉类型图标\n2. 置顶 → 收藏 → 最新\n3. 存储空间显示", {}, {})
+            }
+        }
+        save("text_dialog")
+    }
+
+    @Test fun downloadCard() {
+        compose.setContent { SyncHubTheme { xyz.synchub.android.ui.DownloadCard("SyncHub_1.0.4.apk", 0.42f, "1.1 MB / 2.5 MB", {}, {}) } }
+        save("download")
     }
 }
 

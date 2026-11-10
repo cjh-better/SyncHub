@@ -32,7 +32,7 @@ class TransferService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val n = Notifs.builder(this, Notifs.CH_TRANSFER).setContentTitle("SyncHub 正在传输…")
             .setSilent(true).setOngoing(true).build()
-        startForeground(2, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        startForeground(Notifs.ID_TRANSFER_FG, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         if (intent == null) { maybeStop(); return START_NOT_STICKY }
         pending.incrementAndGet()
         exec.execute {
