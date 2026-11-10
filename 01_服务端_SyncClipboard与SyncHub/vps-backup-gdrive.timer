@@ -1,0 +1,12 @@
+[Unit]
+Description=Trigger Daily Automated VPS Backup to Google Drive at 03:30 UTC
+Documentation=https://github.com/jericx/SyncClipboard
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 UTC
+Persistent=true
+RandomizedDelaySec=300
+Unit=vps-backup-gdrive.service
+
+[Install]
+WantedBy=timers.target

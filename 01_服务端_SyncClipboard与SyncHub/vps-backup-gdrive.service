@@ -1,0 +1,21 @@
+[Unit]
+Description=Automated VPS Backup to Google Drive
+Documentation=https://github.com/jericx/SyncClipboard
+Wants=network-online.target
+After=network-online.target docker.service
+OnFailure=vps-backup-failure-alert.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/vps-backup-gdrive.sh
+StandardOutput=append:/var/log/vps-backup-gdrive.log
+StandardError=append:/var/log/vps-backup-gdrive.log
+Nice=10
+IOSchedulingClass=idle
+CPUQuota=60%
+TimeoutStartSec=1800
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target

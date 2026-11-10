@@ -1,0 +1,28 @@
+# 密钥与本地配置
+.env
+*.jks
+*.keystore
+*.p12
+*.pem
+*.key
+keystore.properties
+local.properties
+02_Windows客户端与右键套件/SyncClipboard.json
+
+# 构建产物
+*.apk
+*.aab
+*.zip
+build/
+.gradle/
+.build/
+.idea/
+*.iml
+*.app/
+
+# 杂项
+__pycache__/
+*.pyc
+*.log
+*.bak*
+.DS_Store

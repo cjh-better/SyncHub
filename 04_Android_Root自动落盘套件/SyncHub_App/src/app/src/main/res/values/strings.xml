@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">SyncHub</string>
+    <string name="send_to_synchub">发送到 SyncHub</string>
+    <string name="tile_label">发送剪贴板</string>
+    <string name="xposed_desc">SyncHub：放开本应用在后台读取剪贴板（Android 10–15），屏蔽“已粘贴”提示。作用域：系统框架 + SyncHub。</string>
+</resources>

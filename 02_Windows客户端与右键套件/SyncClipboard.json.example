@@ -1,0 +1,110 @@
+{
+  "Program": {
+    "DeleteTempFilesOnStartUp": true,
+    "TempFileRemainDays": 1,
+    "LogRemainDays": 7,
+    "CheckUpdateOnStartUp": false,
+    "CheckUpdateForBeta": false,
+    "AutoDownloadUpdate": false,
+    "Language": "zh-CN",
+    "Font": "",
+    "HideWindowOnStartup": true,
+    "StartUpAsAdministrator": false,
+    "DiagnoseMode": false,
+    "DiagnosePageAutoRefresh": false,
+    "Theme": "Dark"
+  },
+  "SyncService": {
+    "SyncSwitchOn": true,
+    "PullSwitchOn": true,
+    "PushSwitchOn": true,
+    "EnableUploadText": true,
+    "EnableUploadImage": true,
+    "EnableUploadSingleFile": true,
+    "EnableUploadMultiFile": true,
+    "NotifyOnDownloaded": true,
+    "NotificationDurationSeconds": 5,
+    "DoNotUploadWhenCut": false,
+    "NotifyOnManualUpload": false,
+    "NotifyFileSyncProgress": true,
+    "IgnoreCertificateErrors": false,
+    "IgnoreExcludeForSyncSuggestion": false,
+    "MaxFileByte": 1073741824,
+    "IntervalTime": 3,
+    "RetryTimes": 3,
+    "TimeOut": 300
+  },
+  "Account": {
+    "AccountId": "1",
+    "AccountType": "SyncClipboard"
+  },
+  "SavedAccounts": {
+    "SyncClipboard": {
+      "1": {
+        "RemoteURL": "https://020814.xyz",
+        "UserName": "admin",
+        "Password": "your-password",
+        "DeletePreviousFilesOnPush": true,
+        "CustomName": "020814.xyz Production Server"
+      }
+    }
+  },
+  "ServerService": {
+    "SwitchOn": false,
+    "Port": 5033,
+    "UserName": "admin",
+    "Password": "change-me",
+    "EnableHttps": false,
+    "CertificatePemPath": "",
+    "CertificatePemKeyPath": "",
+    "EnableCustomConfigurationFile": false,
+    "CustomConfigurationFilePath": "",
+    "MaxHistoryCount": 1000,
+    "HistoryRetentionMinutes": 4320
+  },
+  "History": {
+    "EnableHistory": true,
+    "EnableSyncHistory": true,
+    "AutoDeleteMissingLocalFiles": false,
+    "MaxItemCount": 1000,
+    "HistoryRetentionMinutes": 4320
+  },
+  "ClipboardAssist": {
+    "EasyCopyImageSwitchOn": false,
+    "DownloadWebImage": false,
+    "ConvertSwitchOn": false
+  },
+  "Hotkey": {
+    "Hotkeys": {
+      "OpenMainUI": {
+        "Keys": [
+          "Ctrl",
+          "Alt",
+          "C"
+        ]
+      },
+      "OpenHistoryPanel": {
+        "Keys": [
+          "Ctrl",
+          "Alt",
+          "V"
+        ]
+      },
+      "UploadOnce": {
+        "Keys": [
+          "Ctrl",
+          "Shift",
+          "C"
+        ]
+      },
+      "DownloadOnce": {
+        "Keys": [
+          "Ctrl",
+          "Shift",
+          "V"
+        ]
+      }
+    }
+  },
+  "ConfigVersion": 3
+}

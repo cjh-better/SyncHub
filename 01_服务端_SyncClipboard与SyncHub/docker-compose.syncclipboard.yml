@@ -1,0 +1,12 @@
+services:
+  syncclipboard-server:
+    image: jericx/syncclipboard-server:latest
+    container_name: syncclipboard-server
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5033:5033"
+    environment:
+      - SYNCCLIPBOARD_USERNAME=${SYNCCLIPBOARD_USERNAME:-admin}
+      - SYNCCLIPBOARD_PASSWORD=${SYNCCLIPBOARD_PASSWORD:?请在 .env 中设置 SYNCCLIPBOARD_PASSWORD}
+    volumes:
+      - ./data/server:/app/data
