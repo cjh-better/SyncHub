@@ -272,6 +272,50 @@ def cleanup_expired_items():
     return purged
 
 
+_storage_lock = threading.Lock()
+_storage_cache = {"at": 0.0, "hub": None, "busy": False}
+
+
+def _dir_size(path: str) -> int:
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for f in files:
+            try:
+                total += os.lstat(os.path.join(root, f)).st_size
+            except OSError:
+                pass
+    return total
+
+
+def _refresh_hub_size():
+    try:
+        size = sum(_dir_size(p) for p in (HISTORY_DIR, SERVER_FILE_DIR, PERM_DIR, os.path.dirname(DB_FILE)) if os.path.isdir(p))
+        with _storage_lock:
+            _storage_cache["hub"], _storage_cache["at"] = size, time.time()
+    finally:
+        with _storage_lock:
+            _storage_cache["busy"] = False
+
+
+def get_storage_info() -> dict:
+    """磁盘容量来自 shutil.disk_usage（数据目录所在分区）；SyncHub 占用按目录统计，缓存 60 秒并在后台刷新。"""
+    du = shutil.disk_usage(DATA_DIR if os.path.isdir(DATA_DIR) else "/")
+    start = False
+    with _storage_lock:
+        hub = _storage_cache["hub"]
+        if (time.time() - _storage_cache["at"] > 60) and not _storage_cache["busy"]:
+            _storage_cache["busy"] = True
+            start = True
+    if start:
+        t = threading.Thread(target=_refresh_hub_size, daemon=True)
+        t.start()
+        if hub is None:
+            t.join(timeout=3)
+            with _storage_lock:
+                hub = _storage_cache["hub"]
+    return {"ok": True, "total": du.total, "used": du.used, "free": du.free, "hubBytes": hub}
+
+
 def background_cleaner_loop():
     while True:
         try:
@@ -479,6 +523,10 @@ class SyncHubHandler(BaseHTTPRequestHandler):
 
         if path == "/api/hub/auto-pull":
             self.handle_auto_pull(qs)
+            return
+
+        if path == "/api/hub/storage":
+            self.send_json(get_storage_info())
             return
 
         if path.startswith("/api/hub/download/"):
@@ -1440,6 +1488,17 @@ svg.i { width: 16px; height: 16px; flex-shrink: 0; fill: none; stroke: currentCo
 .conn .dot { width: 7px; height: 7px; border-radius: 50%; background: #34C759; }
 .conn.off .dot { background: var(--danger); }
 .retention-note { font-size: 11.5px; color: var(--text-3); padding: 4px 10px 6px; line-height: 1.5; }
+.storage { padding: 10px 10px 2px; margin-top: 8px; border-top: 1px solid var(--hair); font-size: 11.5px; color: var(--text-3); line-height: 1.5; }
+.storage .st-head { display: flex; align-items: baseline; justify-content: space-between; color: var(--text-2); margin-bottom: 6px; }
+.storage .st-head b { font-weight: 500; color: var(--text); font-size: 12px; }
+.storage .st-bar { height: 4px; border-radius: 2px; background: var(--fill-2); overflow: hidden; display: flex; }
+.storage .st-bar span { display: block; height: 100%; background: var(--accent); transition: width .4s ease; }
+.storage .st-bar span.hub { background: #5AC8FA; }
+.storage.warn .st-bar span:not(.hub) { background: #FF9500; }
+.storage.crit .st-bar span:not(.hub) { background: var(--danger); }
+.storage .st-lines { margin-top: 6px; display: flex; flex-direction: column; gap: 1px; }
+.storage .st-lines .k { display: inline-block; width: 7px; height: 7px; border-radius: 2px; margin-right: 5px; vertical-align: 0; }
+.mstorage { display: none; }
 
 .main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow-y: auto; }
 .main-inner { width: 100%; max-width: 1040px; margin: 0 auto; padding: 22px 32px 120px; }
@@ -1529,7 +1588,9 @@ svg.i { width: 16px; height: 16px; flex-shrink: 0; fill: none; stroke: currentCo
 .ficon.c-app { background: #E7F6EA; color: #23883A; }
 .ficon.c-aud { background: #EDEDFC; color: #5452C9; }
 .ficon.c-txt { background: #E6F5F4; color: #0D8A82; }
-.thumb { width: 38px; height: 38px; border-radius: 9px; object-fit: cover; flex-shrink: 0; border: 1px solid var(--hair); background: var(--fill); cursor: zoom-in; }
+.thumb { width: 44px; height: 44px; border-radius: 8px; object-fit: cover; flex-shrink: 0; border: 1px solid var(--hair); background: var(--fill); cursor: zoom-in; }
+.row { min-height: 58px; }
+.card-prev .ext-label { font-size: 22px; font-weight: 600; letter-spacing: .02em; color: var(--text-3); }
 
 .rmain { flex: 1; min-width: 0; cursor: pointer; }
 .rtitle { font-size: 13.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 6px; }
@@ -1692,6 +1753,9 @@ mark { background: rgba(255, 204, 0, 0.35); color: inherit; border-radius: 2px; 
   .composer textarea { font-size: 16px; }
   .hint.kb { display: none; }
   .row { padding: 11px 2px; gap: 10px; }
+  .thumb { width: 40px; height: 40px; }
+  .mstorage { display: block; margin: 22px 0 0; padding: 12px 2px 0; border-top: 1px solid var(--hair); }
+  .mstorage.storage { border-top: 1px solid var(--hair); }
   .row .ractions .ib.quiet { opacity: 1; }
   .row .ractions .ib.hide-m, .row .ractions .ib.quiet[data-act="pin"] { display: none; }
   .rmeta .m-hide { display: none; }
@@ -1733,6 +1797,7 @@ mark { background: rgba(255, 204, 0, 0.35); color: inherit; border-radius: 2px; 
       <button class="nav-item danger" data-act="cleanup" title="删除所有未收藏且未置顶的项目"><i data-ic="trash"></i>清理临时项…</button>
       <div class="retention-note" id="retentionNote">普通项目 72 小时后自动清理，收藏或置顶的项目永久保留。</div>
       <div class="conn" id="conn"><span class="dot"></span><span id="connText">正在连接…</span></div>
+      <div class="storage hidden" id="storage" aria-label="存储空间"></div>
     </div>
   </aside>
 
@@ -1795,6 +1860,7 @@ mark { background: rgba(255, 204, 0, 0.35); color: inherit; border-radius: 2px; 
       </div>
 
       <section id="content" aria-live="polite"></section>
+      <div class="storage mstorage hidden" id="mStorage" aria-label="存储空间"></div>
     </div>
   </main>
 </div>
@@ -1920,11 +1986,45 @@ async function load(force) {
     S.loaded = true; setOnline(true);
     const sig = JSON.stringify(S.items.map(x => [x.id, x.starred, x.pinned, x.category, x.hasFile]));
     if (force || sig !== S.sig) { S.sig = sig; render(); } else { renderNav(); tick(); }
+    if (force || sig !== S.sigStorage || !S.storageAt || Date.now() - S.storageAt > 60000) { S.sigStorage = sig; loadStorage(); }
   } catch (e) {
     setOnline(false);
     if (force) toast("无法连接服务器：" + e.message, { err: true });
     if (!S.loaded) { S.loaded = true; render(); }
   }
+}
+/* ---------------- Storage ---------------- */
+function fmtSize(b) {
+  if (!b || b <= 0) return "0 GB";
+  const gb = b / 1073741824;
+  if (gb >= 1024) return (gb / 1024).toFixed(gb >= 10240 ? 0 : 1) + " TB";
+  if (gb >= 1) return gb.toFixed(gb >= 100 ? 0 : 1) + " GB";
+  return (b / 1048576).toFixed(b >= 104857600 ? 0 : 1) + " MB";
+}
+function storageHtml(d) {
+  const pct = d.total ? Math.min(100, d.used / d.total * 100) : 0;
+  const hubPct = d.total && d.hubBytes != null ? Math.min(pct, d.hubBytes / d.total * 100) : 0;
+  const lvl = pct >= 95 ? " crit" : (pct >= 85 ? " warn" : "");
+  const hubLine = d.hubBytes != null
+    ? `<span><i class="k" style="background:#5AC8FA"></i>SyncHub 占用 ${fmtSize(d.hubBytes)}</span>` : "";
+  return { lvl, html: `<div class="st-head"><b>存储空间</b><span class="tabular">${Math.round(pct)}%</span></div>
+    <div class="st-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(pct)}" title="已用 ${pct.toFixed(1)}%">
+      <span class="hub" style="width:${hubPct.toFixed(2)}%"></span><span style="width:${Math.max(0, pct - hubPct).toFixed(2)}%"></span></div>
+    <div class="st-lines tabular">
+      <span>已用 ${fmtSize(d.used)} / 共 ${fmtSize(d.total)}</span>
+      <span>剩余 ${fmtSize(d.free)}</span>${hubLine}</div>` };
+}
+async function loadStorage() {
+  try {
+    const d = await api("/api/hub/storage");
+    const r = storageHtml(d);
+    ["storage", "mStorage"].forEach(id => {
+      const el = $(id); if (!el) return;
+      el.innerHTML = r.html;
+      el.className = "storage" + (id === "mStorage" ? " mstorage" : "") + r.lvl;
+    });
+    S.storageAt = Date.now();
+  } catch (e) { /* 存储信息只是辅助显示，失败时保留上次结果 */ }
 }
 function setOnline(ok) {
   S.online = ok; if (ok) S.lastSync = Date.now();
@@ -2057,7 +2157,8 @@ function iconHtml(it, big) {
   return `<div class="ficon ${m[1]}" data-act="open">${ic(m[0])}${ext ? `<span class="ext">${esc(ext)}</span>` : ""}</div>`;
 }
 function metaHtml(it) {
-  const parts = [isText(it) ? `${(it.text || "").length} 字` : formatBytes(it.size)];
+  const x = isText(it) ? "" : extOf(it).toUpperCase();
+  const parts = [isText(it) ? `${(it.text || "").length} 字` : (x ? esc(x) + " · " : "") + formatBytes(it.size)];
   if (!isText(it) && !it.hasFile) parts.push(`<span style="color:var(--danger)">文件缺失</span>`);
   parts.push(`<span class="dev">${hl(it.fromDevice)}</span>`);
   parts.push(`<span data-rt="${it.id}" title="${esc(it.createTimeLocal)} (UTC+8)">${relTime(it)}</span>`);
@@ -2080,14 +2181,16 @@ function flags(it) {
 
 function rowHtml(it) {
   const rest = restOf(it);
+  // 列表不再显示类型图标；图片保留缩略图（属于内容预览），放在右侧，保证所有行的文字左对齐
+  const thumb = canThumb(it) ? `<img class="thumb" data-act="open" loading="lazy" src="${esc(inlineUrl(it))}" alt="">` : "";
   return `<div class="row ${S.sel.has(it.id) ? "sel" : ""}" data-id="${it.id}" tabindex="0">
     ${S.selecting ? chk() : ""}
-    ${iconHtml(it)}
     <div class="rmain" data-act="open">
       <div class="rtitle"><span class="t">${hl(titleOf(it))}</span>${flags(it)}</div>
       ${rest ? `<div class="rsnip">${hl(rest)}</div>` : ""}
       <div class="rmeta tabular">${metaHtml(it)}</div>
     </div>
+    ${thumb}
     ${S.selecting ? "" : `<div class="ractions">${primaryBtn(it)}${toggleBtns(it)}
       <button class="ib quiet del hide-m" data-act="del" title="删除 (Delete)">${ic("trash")}</button>
       <button class="ib" data-act="more" title="更多操作">${ic("more")}</button></div>`}
@@ -2097,7 +2200,7 @@ function cardHtml(it) {
   let prev;
   if (canThumb(it)) prev = `<img loading="lazy" src="${esc(inlineUrl(it))}" alt="">`;
   else if (isText(it)) prev = `<div class="txt">${hl(it.text)}</div>`;
-  else prev = iconHtml(it, true);
+  else { const x = extOf(it).slice(0, 5).toUpperCase(); prev = `<span class="ext-label">${esc(x || "文件")}</span>`; }
   return `<div class="card ${S.sel.has(it.id) ? "sel" : ""}" data-id="${it.id}" tabindex="0">
     ${S.selecting ? chk() : ""}
     <div class="card-prev" data-act="open">${prev}</div>
@@ -2597,7 +2700,7 @@ window.addEventListener("drop", (e) => {
 });
 document.addEventListener("error", (e) => {
   const t = e.target;
-  if (t && t.tagName === "IMG" && t.closest("#content")) t.outerHTML = `<div class="ficon c-img" data-act="open">${ic("image")}</div>`;
+  if (t && t.tagName === "IMG" && t.closest("#content")) { if (t.classList.contains("thumb")) t.remove(); else t.outerHTML = `<span class="ext-label">${esc(t.alt || "图片")}</span>`; }
 }, true);
 window.addEventListener("resize", closeMenu);
 $("main").addEventListener("scroll", closeMenu, { passive: true });
