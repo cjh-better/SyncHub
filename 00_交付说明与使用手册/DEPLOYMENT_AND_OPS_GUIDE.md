@@ -66,3 +66,10 @@ docker compose restart
   ```
 - **Memos (`msg.020814.xyz`) 7 天自动清理定时任务**：
   - 位于 `/etc/cron.daily/memos-cleanup-7d`，每日凌晨自动清理 7 天以前的 Memo 记录、附件资源并执行 SQLite `VACUUM` 释放磁盘空间。
+
+### 5. SyncHub 访问认证（2026-11-10 起）
+- `/hub/` 网页和全部 `/api/hub/*` 接口要求 HTTP Basic 认证，账号密码与 SyncClipboard 服务端相同；只有 `/hub/manifest.json`（不含数据）和 CORS 预检不需要登录。
+- `synchub_server.py` 先读环境变量 `SYNCHUB_USER` / `SYNCHUB_PASSWORD`，没有就读 `/opt/stacks/syncclipboard/compose.yaml` 里的 `SYNCCLIPBOARD_USERNAME` / `SYNCCLIPBOARD_PASSWORD`（按修改时间自动重新读取）；都读不到时拒绝所有请求。
+- 以后改密码：改 compose 里的密码并 `docker compose up -d` 重建容器即可，SyncHub 自动跟着生效；电脑、手机、Mac 上的 SyncClipboard / SyncHub 账号也要一起改。
+- 被拒绝的请求会写进 `journalctl -u synchub`（`[auth] 401 ...`，同一来源 10 分钟只记一次）。
+- 临时排查客户端时可加 `Environment=SYNCHUB_AUTH_MODE=log`（只记录不拦截），排查完务必去掉。

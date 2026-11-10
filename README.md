@@ -36,4 +36,5 @@ Android 签名：复制 `04_Android_Root自动落盘套件/SyncHub_App/src/keyst
 
 - 仓库中不包含任何真实密码、SSH 凭据、keystore 或 `.env`；请勿把它们提交上来（`.gitignore` 已排除）。
 - 请为 SyncClipboard / SyncHub 设置强密码，并只通过 HTTPS 访问。
+- `/hub/` 网页和全部 `/api/hub/*` 接口都要求 HTTP Basic 认证，账号密码与 SyncClipboard 服务端相同。`synchub_server.py` 先读环境变量 `SYNCHUB_USER` / `SYNCHUB_PASSWORD`，没有就读 SyncClipboard 的 docker compose 文件（`SYNCCLIPBOARD_USERNAME` / `SYNCCLIPBOARD_PASSWORD`）；都读不到时拒绝所有请求。Windows 客户端自动使用本机 SyncClipboard 客户端里登录的账号。
 - 编译好的 APK、Mac 安装包等二进制文件不放在仓库里，APK 通过 GitHub Releases 发布。

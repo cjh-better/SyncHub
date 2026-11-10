@@ -9,7 +9,7 @@ Features:
 - 3-day (72-hour) auto-expiration for normal items; Permanent retention for Starred (收藏) or Pinned (置顶) items
 - Instant single/batch delete
 - Three-platform auto-receive polling endpoint (Windows K:\跨端传输文件, Android /sdcard/Download/跨端传输, Mac ~/Downloads/跨端传输文件)
-- Zero-login-friction modern responsive WebApp / PWA (/hub/)
+- Modern responsive WebApp / PWA (/hub/), protected by HTTP Basic auth (same account as SyncClipboard)
 """
 
 import os
@@ -19,6 +19,9 @@ import time
 import shutil
 import sqlite3
 import hashlib
+import hmac
+import base64
+import binascii
 import urllib.parse
 import mimetypes
 import threading
@@ -278,6 +281,106 @@ def background_cleaner_loop():
         time.sleep(600)
 
 
+# ---------------------------------------------------------------------------
+# 访问认证：/hub/ 网页与全部 /api/hub/* 接口要求 HTTP Basic 认证，
+# 账号密码与 SyncClipboard 服务端一致。读取顺序：
+#   1) 环境变量 SYNCHUB_USER / SYNCHUB_PASSWORD（例如写在 systemd EnvironmentFile 里）
+#   2) SyncClipboard 的 docker compose 文件里的 SYNCCLIPBOARD_USERNAME / SYNCCLIPBOARD_PASSWORD
+#      （按修改时间缓存；在 compose 里改了密码并重建容器后，这里会自动跟着生效）
+# 读不到账号时一律拒绝访问（fail closed）。
+# SYNCHUB_AUTH_MODE=log 时只记录未认证请求而不拦截，仅用于排查客户端。
+# ---------------------------------------------------------------------------
+AUTH_REALM = "SyncHub"
+AUTH_MODE = os.environ.get("SYNCHUB_AUTH_MODE", "enforce").strip().lower()
+SYNCCLIPBOARD_COMPOSE_FILES = [
+    p for p in [
+        os.environ.get("SYNCHUB_COMPOSE_FILE", ""),
+        os.path.join(os.path.dirname(DATA_DIR), "compose.yaml"),
+        os.path.join(os.path.dirname(DATA_DIR), "compose.yml"),
+        os.path.join(os.path.dirname(DATA_DIR), "docker-compose.yml"),
+        os.path.join(os.path.dirname(DATA_DIR), "docker-compose.yaml"),
+    ] if p
+]
+# 无需登录的路径：只有 CORS 预检和不含任何数据的 PWA manifest
+PUBLIC_PATHS = {"/hub/manifest.json"}
+
+_cred_lock = threading.Lock()
+_cred_cache = {"key": None, "value": None}
+_auth_log_seen = {}
+
+
+def _parse_compose_credentials(text: str):
+    vals = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("#"):
+            continue
+        if line.startswith("- "):
+            line = line[2:].strip()
+        m = None
+        for key in ("SYNCCLIPBOARD_USERNAME", "SYNCCLIPBOARD_PASSWORD"):
+            for sep in ("=", ":"):
+                prefix = key + sep
+                if line.startswith(prefix) or line.startswith('"' + prefix) or line.startswith("'" + prefix):
+                    m = (key, line.split(sep, 1)[1].strip())
+                    break
+            if m:
+                break
+        if not m:
+            continue
+        key, val = m
+        if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
+            val = val[1:-1]
+        elif val and val[-1] in "\"'":
+            val = val[:-1]
+        vals[key] = val
+    u, p = vals.get("SYNCCLIPBOARD_USERNAME"), vals.get("SYNCCLIPBOARD_PASSWORD")
+    return (u, p) if u and p else None
+
+
+def get_hub_credentials():
+    """Return (username, password) or None. Never log the result."""
+    env_u, env_p = os.environ.get("SYNCHUB_USER", ""), os.environ.get("SYNCHUB_PASSWORD", "")
+    if env_u and env_p:
+        return env_u, env_p
+    for path in SYNCCLIPBOARD_COMPOSE_FILES:
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        key = (path, st.st_mtime_ns, st.st_size)
+        with _cred_lock:
+            if _cred_cache["key"] == key:
+                if _cred_cache["value"]:
+                    return _cred_cache["value"]
+                continue
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                val = _parse_compose_credentials(f.read())
+        except Exception:
+            val = None
+        with _cred_lock:
+            _cred_cache["key"], _cred_cache["value"] = key, val
+        if val:
+            return val
+    return None
+
+
+def check_basic_auth(header_value) -> bool:
+    creds = get_hub_credentials()
+    if not creds or not header_value:
+        return False
+    parts = header_value.strip().split(None, 1)
+    if len(parts) != 2 or parts[0].lower() != "basic":
+        return False
+    try:
+        decoded = base64.b64decode(parts[1].strip(), validate=True)
+    except (binascii.Error, ValueError):
+        return False
+    expected = ("%s:%s" % creds).encode("utf-8")
+    return hmac.compare_digest(decoded, expected)
+
+
 class SyncHubHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -295,6 +398,45 @@ class SyncHubHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def require_auth(self) -> bool:
+        """True if the request may proceed; otherwise a 401 has been sent."""
+        path = urllib.parse.urlparse(self.path).path
+        if path in PUBLIC_PATHS:
+            return True
+        if check_basic_auth(self.headers.get("Authorization")):
+            return True
+        if AUTH_MODE == "log":
+            sys.stderr.write("[auth-log] unauthenticated %s %s ua=%r ip=%s\n" % (
+                self.command, path, self.headers.get("User-Agent", ""),
+                self.headers.get("X-Real-IP") or self.client_address[0]))
+            sys.stderr.flush()
+            return True
+        ip = self.headers.get("X-Real-IP") or self.client_address[0]
+        ua = (self.headers.get("User-Agent", "") or "")[:80]
+        now = time.time()
+        with _cred_lock:
+            last = _auth_log_seen.get((ip, ua), 0)
+            if now - last > 600:
+                _auth_log_seen[(ip, ua)] = now
+                if len(_auth_log_seen) > 1000:
+                    _auth_log_seen.clear()
+                sys.stderr.write("[auth] 401 %s %s ua=%r ip=%s (同一来源 10 分钟内只记一次)\n" % (
+                    self.command, path, ua, ip))
+                sys.stderr.flush()
+        body = json.dumps({"ok": False, "error": "Unauthorized"}).encode("utf-8")
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="%s", charset="UTF-8"' % AUTH_REALM)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        # 请求体（比如上传的文件）不再读取，直接关闭连接
+        self.send_header("Connection", "close")
+        self.close_connection = True
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+        return False
+
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -304,6 +446,8 @@ class SyncHubHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        if not self.require_auth():
+            return
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         qs = urllib.parse.parse_qs(parsed.query)
@@ -352,6 +496,8 @@ class SyncHubHandler(BaseHTTPRequestHandler):
         self.send_json({"error": "Not found", "path": path}, 404)
 
     def do_POST(self):
+        if not self.require_auth():
+            return
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         qs = urllib.parse.parse_qs(parsed.query)
@@ -383,6 +529,8 @@ class SyncHubHandler(BaseHTTPRequestHandler):
         self.send_json({"error": "Not found"}, 404)
 
     def do_PUT(self):
+        if not self.require_auth():
+            return
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path in ("/api/hub/upload", "/api/hub/upload-stream"):
             qs = urllib.parse.parse_qs(parsed.query)
@@ -391,6 +539,8 @@ class SyncHubHandler(BaseHTTPRequestHandler):
         self.send_json({"error": "Not found"}, 404)
 
     def do_DELETE(self):
+        if not self.require_auth():
+            return
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         if path.startswith("/api/hub/item/"):
@@ -854,8 +1004,9 @@ class SyncHubHandler(BaseHTTPRequestHandler):
 
     def serve_script(self, content: str, filename: str):
         # 下发给客户端的脚本里的账号密码来自环境变量，源码中不保存真实凭据
-        content = (content.replace("__SYNCHUB_USER__", os.environ.get("SYNCHUB_USER", "admin"))
-                          .replace("__SYNCHUB_PASSWORD__", os.environ.get("SYNCHUB_PASSWORD", "")))
+        creds = get_hub_credentials() or ("", "")
+        content = (content.replace("__SYNCHUB_USER__", creds[0])
+                          .replace("__SYNCHUB_PASSWORD__", creds[1]))
         body = content.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/x-shellscript; charset=utf-8")
@@ -2474,4 +2625,5 @@ if __name__ == "__main__":
     cleaner_thread.start()
     server = ThreadingHTTPServer(("0.0.0.0", PORT), SyncHubHandler)
     print(f"[SyncHub] Listening on 0.0.0.0:{PORT} (Retention: {RETENTION_HOURS}h)...", flush=True)
+    print("[SyncHub] Auth: mode=%s, credentials %s" % (AUTH_MODE, "loaded" if get_hub_credentials() else "NOT FOUND - all requests will be rejected"), flush=True)
     server.serve_forever()

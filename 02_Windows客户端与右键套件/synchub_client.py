@@ -15,9 +15,11 @@ import os
 import sys
 import time
 import json
+import base64
 import ssl
 import urllib.parse
 import urllib.request
+import urllib.error
 import http.client
 import subprocess
 import threading
@@ -28,6 +30,38 @@ RECV_DIR = r"K:\跨端传输文件"
 STATE_DIR = os.path.join(os.environ.get("APPDATA", r"C:\Users\Administrator\AppData\Roaming"), "SyncClipboard")
 STATE_FILE = os.path.join(STATE_DIR, "synchub_win_state.json")
 LOG_FILE = os.path.join(STATE_DIR, "synchub_win.log")
+SYNCCLIPBOARD_CONFIG = os.path.join(STATE_DIR, "SyncClipboard.json")
+USER_AGENT = "SyncHub-Windows/1.1"
+
+
+def load_credentials():
+    """服务器要求 HTTP Basic 认证，账号与 SyncClipboard 相同。
+    优先读环境变量 SYNCHUB_USER / SYNCHUB_PASSWORD，否则读本机 SyncClipboard 客户端配置
+    （%APPDATA%\\SyncClipboard\\SyncClipboard.json 里当前使用的账号）。每次调用都重新读取，
+    所以在 SyncClipboard 里改了密码后这里会自动跟着生效。"""
+    env_u, env_p = os.environ.get("SYNCHUB_USER", ""), os.environ.get("SYNCHUB_PASSWORD", "")
+    if env_u and env_p:
+        return env_u, env_p
+    try:
+        with open(SYNCCLIPBOARD_CONFIG, "r", encoding="utf-8-sig") as f:
+            cfg = json.load(f)
+        accounts = (cfg.get("SavedAccounts") or {}).get("SyncClipboard") or {}
+        acc_id = str((cfg.get("Account") or {}).get("AccountId", ""))
+        acc = accounts.get(acc_id) or next(iter(accounts.values()), None)
+        if acc and acc.get("UserName"):
+            return acc.get("UserName", ""), acc.get("Password", "")
+    except Exception as e:
+        log_msg(f"Read SyncClipboard account error: {type(e).__name__}")
+    return None
+
+
+def auth_headers() -> dict:
+    h = {"User-Agent": USER_AGENT}
+    creds = load_credentials()
+    if creds:
+        token = base64.b64encode(f"{creds[0]}:{creds[1]}".encode("utf-8")).decode("ascii")
+        h["Authorization"] = f"Basic {token}"
+    return h
 
 
 def log_msg(msg: str):
@@ -110,7 +144,7 @@ def poll_once():
     last_id = load_last_id()
     ctx = ssl.create_default_context()
     url = f"{SERVER_URL}/api/hub/auto-pull?device=windows&since_id={last_id}"
-    req = urllib.request.Request(url, headers={"User-Agent": "SyncHub-Windows/1.0"})
+    req = urllib.request.Request(url, headers=auth_headers())
     with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
         data = json.loads(resp.read().decode("utf-8"))
 
@@ -142,7 +176,7 @@ def poll_once():
         dl_url = f"{SERVER_URL}{dl_path}"
         log_msg(f"Downloading incoming file from {from_dev}: {fname} ({expected_size} bytes) -> {dest_file}")
 
-        dl_req = urllib.request.Request(dl_url, headers={"User-Agent": "SyncHub-Windows/1.0"})
+        dl_req = urllib.request.Request(dl_url, headers=auth_headers())
         with urllib.request.urlopen(dl_req, timeout=1800, context=ctx) as r, open(part_file, "wb") as out_f:
             while True:
                 chunk = r.read(1024 * 1024)
@@ -164,9 +198,20 @@ def poll_once():
 def run_daemon():
     os.makedirs(RECV_DIR, exist_ok=True)
     log_msg(f"SyncHub Windows Auto-Receiver Daemon started. Watching -> {RECV_DIR}")
+    if not load_credentials():
+        log_msg("Warning: no SyncClipboard account found; server will answer 401 (set SYNCHUB_USER/SYNCHUB_PASSWORD or log in to SyncClipboard)")
+    last_ok_log = 0.0
     while True:
         try:
             poll_once()
+            if time.time() - last_ok_log > 3600:
+                log_msg("Poll OK (authenticated)")
+                last_ok_log = time.time()
+        except urllib.error.HTTPError as e:
+            if e.code == 401:
+                log_msg("Poll warning: HTTP 401 - 用户名或密码不正确（与 SyncClipboard 账号不一致？）")
+            else:
+                log_msg(f"Poll warning: HTTP {e.code}")
         except Exception as e:
             log_msg(f"Poll warning: {e}")
         time.sleep(3)
@@ -265,6 +310,8 @@ def send_file_with_gui(file_path: str, starred: bool = False, pinned: bool = Fal
                 "pinned": "1" if pinned else "0"
             })
             conn.putrequest("POST", f"/api/hub/upload?{qs}")
+            for hk, hv in auth_headers().items():
+                conn.putheader(hk, hv)
             conn.putheader("Content-Type", "application/octet-stream")
             conn.putheader("Content-Length", str(file_size))
             conn.endheaders()
@@ -299,7 +346,7 @@ def send_file_with_gui(file_path: str, starred: bool = False, pinned: bool = Fal
                 time.sleep(1.2)
                 root.after(0, root.destroy)
             else:
-                root.after(0, lambda: lbl_stat.configure(text=f"上传失败 (HTTP {resp.status})：{resp_body[:80]}", fg=ERR))
+                root.after(0, lambda: lbl_stat.configure(text=f"上传失败 (HTTP {resp.status}{"，用户名或密码不正确" if resp.status == 401 else ""})：{resp_body[:80]}", fg=ERR))
         except Exception as e:
             root.after(0, lambda err=str(e): lbl_stat.configure(text=f"上传出错：{err}", fg=ERR))
 
