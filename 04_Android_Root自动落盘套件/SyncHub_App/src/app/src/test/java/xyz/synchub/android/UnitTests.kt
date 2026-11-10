@@ -7,6 +7,9 @@ import org.junit.Test
 import xyz.synchub.android.net.ClipProfile
 import xyz.synchub.android.net.Hashing
 import xyz.synchub.android.net.ServerConfig
+import xyz.synchub.android.net.HubItem
+import xyz.synchub.android.net.HubStorage
+import xyz.synchub.android.net.hubOrder
 import xyz.synchub.android.sync.AutoReceiver
 import xyz.synchub.android.sync.DirectFileSink
 import java.nio.file.Files
@@ -53,5 +56,22 @@ class UnitTests {
         dir.resolve("r.pdf").writeText("1")
         assertEquals("r (1).pdf", AutoReceiver.uniqueName(sink, "r.pdf"))
         assertTrue(sink.existsWithSize("r.pdf", 1)); assertFalse(sink.existsWithSize("r.pdf", 2))
+    }
+
+    private fun item(id: Long, starred: Boolean = false, pinned: Boolean = false) =
+        HubItem(id, 0, "t$id", "", 0, "", "", starred, pinned, null, "", "", false, null)
+
+    @Test fun hubOrderPinnedThenStarredThenNewest() {
+        val list = listOf(item(1), item(2, starred = true), item(3, pinned = true), item(4), item(5, starred = true, pinned = true), item(6, starred = true))
+        assertEquals(listOf(5L, 3L, 6L, 2L, 4L, 1L), list.hubOrder().map { it.id })
+    }
+
+    @Test fun storageParseAndFormat() {
+        val s = HubStorage.fromJson(org.json.JSONObject("""{"ok":true,"total":63290085376,"used":11433066496,"free":48619253760,"hubBytes":262144000}"""))
+        assertEquals("58.9 GB", HubStorage.fmt(s.total)); assertEquals("10.6 GB", HubStorage.fmt(s.used))
+        assertEquals("45.3 GB", HubStorage.fmt(s.free)); assertEquals("250 MB", HubStorage.fmt(s.hubBytes!!))
+        assertTrue(s.usedFraction in 0.17f..0.19f); assertTrue(s.hubFraction < s.usedFraction)
+        val n = HubStorage.fromJson(org.json.JSONObject("""{"total":10,"used":5,"free":5,"hubBytes":null}"""))
+        assertEquals(null, n.hubBytes); assertEquals(0f, n.hubFraction)
     }
 }

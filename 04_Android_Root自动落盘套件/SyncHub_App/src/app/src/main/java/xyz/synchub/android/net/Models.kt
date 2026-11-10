@@ -100,4 +100,33 @@ data class HubItem(
 
 data class AutoPullResult(val latestId: Long, val items: List<HubItem>)
 
+/** 与网页端一致的列表顺序：置顶 → 收藏 → 其他，每组内从新到旧（既置顶又收藏的算置顶）。 */
+fun List<HubItem>.hubOrder(): List<HubItem> =
+    sortedWith(compareByDescending<HubItem> { it.pinned }.thenByDescending { it.starred }.thenByDescending { it.id })
+
+/** GET /api/hub/storage：数据目录所在磁盘的容量与 SyncHub 自身占用（字节）。 */
+data class HubStorage(val total: Long, val used: Long, val free: Long, val hubBytes: Long?) {
+    val usedFraction: Float get() = if (total > 0) (used.toDouble() / total).toFloat().coerceIn(0f, 1f) else 0f
+    val hubFraction: Float get() = if (total > 0 && hubBytes != null) (hubBytes.toDouble() / total).toFloat().coerceIn(0f, usedFraction) else 0f
+
+    companion object {
+        fun fromJson(o: JSONObject) = HubStorage(
+            total = o.optLong("total", 0), used = o.optLong("used", 0), free = o.optLong("free", 0),
+            hubBytes = if (!o.has("hubBytes") || o.isNull("hubBytes")) null else o.optLong("hubBytes"),
+        )
+
+        /** 1.2 GB / 250 MB / 3.4 TB，保留一位小数（≥100 取整）。 */
+        fun fmt(b: Long): String {
+            if (b <= 0) return "0 GB"
+            val gb = b / 1073741824.0
+            fun f(v: Double) = if (v >= 100) String.format(java.util.Locale.US, "%.0f", v) else String.format(java.util.Locale.US, "%.1f", v)
+            return when {
+                gb >= 1024 -> f(gb / 1024) + " TB"
+                gb >= 1 -> f(gb) + " GB"
+                else -> f(b / 1048576.0) + " MB"
+            }
+        }
+    }
+}
+
 class ApiException(val code: Int, message: String) : Exception(message)

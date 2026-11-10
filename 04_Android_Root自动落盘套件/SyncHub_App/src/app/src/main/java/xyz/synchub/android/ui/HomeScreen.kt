@@ -30,6 +30,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -40,6 +41,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import xyz.synchub.android.net.HubClient
 import xyz.synchub.android.net.HubItem
+import xyz.synchub.android.net.HubStorage
+import xyz.synchub.android.net.hubOrder
 import xyz.synchub.android.root.RootShell
 import xyz.synchub.android.sync.Storage
 import xyz.synchub.android.sync.SyncService
@@ -59,6 +62,7 @@ fun HomeScreen(act: MainActivity, onSettings: () -> Unit) {
     val scope = rememberCoroutineScope()
     var items by remember { mutableStateOf<List<HubItem>>(emptyList()) }
     var loadErr by remember { mutableStateOf<String?>(null) }
+    var storage by remember { mutableStateOf<HubStorage?>(null) }
     var loading by remember { mutableStateOf(false) }
     var running by remember { mutableStateOf(prefs.serviceEnabled) }
     val module = remember { ModuleStatus.isActive() }
@@ -67,8 +71,10 @@ fun HomeScreen(act: MainActivity, onSettings: () -> Unit) {
         loading = true
         scope.launch {
             val r = withContext(Dispatchers.IO) { runCatching { HubClient(prefs.server()).listItems(60) } }
-            r.onSuccess { items = it; loadErr = null }.onFailure { loadErr = it.message }
+            r.onSuccess { items = it.hubOrder(); loadErr = null }.onFailure { loadErr = it.message }
             loading = false
+            // 存储信息只是辅助显示：失败时保留上次结果，不报错
+            withContext(Dispatchers.IO) { runCatching { HubClient(prefs.server()).storage() } }.onSuccess { storage = it }
         }
     }
     LaunchedEffect(Unit) { refresh() }
@@ -82,6 +88,7 @@ fun HomeScreen(act: MainActivity, onSettings: () -> Unit) {
         onSettings = onSettings, onRefresh = { refresh() },
         onToggle = { if (running) { SyncService.stop(act); running = false } else { SyncService.start(act); running = true } },
         onItem = { onItemTap(act, it) },
+        storage = storage,
     )
 }
 
@@ -91,6 +98,7 @@ fun HomeContent(
     st: RuntimeStatus, items: List<HubItem>, loadErr: String?, loading: Boolean, running: Boolean, module: Boolean,
     rootLabel: String, rootOk: Boolean, serverUrl: String, autoReceive: Boolean, saveDir: String,
     onSettings: () -> Unit, onRefresh: () -> Unit, onToggle: () -> Unit, onItem: (HubItem) -> Unit,
+    storage: HubStorage? = null,
 ) {
     Column(Modifier.fillMaxSize().background(Mac.Bg).systemBarsPadding()) {
         TopBar("SyncHub", right = { LinkButton("设置") { onSettings() } })
@@ -138,6 +146,10 @@ fun HomeContent(
                     if (running) LinkButton("停止同步", color = Mac.Red) { onToggle() }
                     else PrimaryButton("开始同步") { onToggle() }
                 }
+                if (storage != null) {
+                    SectionTitle("存储空间")
+                    MacCard(Modifier.padding(horizontal = 16.dp)) { StorageBlock(storage) }
+                }
                 Row(Modifier.fillMaxWidth().padding(end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     SectionTitle("最近条目")
                     Spacer(Modifier.weight(1f))
@@ -153,7 +165,7 @@ fun HomeContent(
                     topStart = if (i == 0) r else 0.dp, topEnd = if (i == 0) r else 0.dp,
                     bottomStart = if (i == items.lastIndex) r else 0.dp, bottomEnd = if (i == items.lastIndex) r else 0.dp)
                 Column(Modifier.padding(horizontal = 16.dp).background(Mac.Card, shape)) {
-                    if (i > 0) Hairline(60)
+                    if (i > 0) Hairline(12)
                     ItemRow(it) { onItem(it) }
                 }
             }
@@ -176,26 +188,43 @@ private fun onItemTap(act: MainActivity, it: HubItem) {
 private fun ItemRow(it: HubItem, onClick: () -> Unit) {
     Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically) {
-        val badge = when {
-            it.isText -> "T"
-            else -> it.filename.substringAfterLast('.', "").take(4).uppercase().ifEmpty { "FILE" }
-        }
-        Box(Modifier.size(36.dp).background(Mac.AccentSoft, RoundedCornerShape(8.dp)), contentAlignment = Alignment.Center) {
-            Text(badge, color = Mac.Accent, fontSize = if (badge.length > 2) 10.sp else 14.sp, fontWeight = FontWeight.Bold)
-        }
-        Spacer(Modifier.width(12.dp))
+        // 不再显示类型图标（与网页端一致）；文件类型以扩展名文字放在说明行里
         Column(Modifier.weight(1f)) {
             Text(if (it.isText) it.text.replace('\n', ' ') else it.filename, color = Mac.Text, fontSize = 15.sp,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
             val meta = buildString {
+                val ext = if (it.isText) "" else it.filename.substringAfterLast('.', "").take(5).uppercase()
+                if (ext.isNotEmpty()) append(ext).append(" · ")
                 append(it.fromDevice)
                 append(" · ").append(it.createTimeLocal.drop(5).dropLast(3))
                 if (!it.isText) append(" · ").append(TransferNotifier.fmt(it.size))
-                if (it.starred) append(" · ★")
                 if (it.pinned) append(" · 置顶")
+                if (it.starred) append(" · ★ 收藏")
             }
             Text(meta, color = Mac.Text2, fontSize = 12.sp, maxLines = 1)
         }
         Text(if (it.isText) "复制" else "下载", color = Mac.Accent, fontSize = 13.sp)
+    }
+}
+
+/** 极简存储条：细进度条 + 已用 / 共 / 剩余 + SyncHub 占用。 */
+@Composable
+fun StorageBlock(s: HubStorage) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp)) {
+        val pct = s.usedFraction
+        val barColor = when { pct >= 0.95f -> Mac.Red; pct >= 0.85f -> Mac.Orange; else -> Mac.Accent }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("已用 ${HubStorage.fmt(s.used)} / 共 ${HubStorage.fmt(s.total)}", color = Mac.Text, fontSize = 14.sp, modifier = Modifier.weight(1f))
+            Text("${(pct * 100).toInt()}%", color = Mac.Text2, fontSize = 13.sp)
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(Modifier.fillMaxWidth().height(4.dp).background(Mac.Fill, RoundedCornerShape(2.dp))) {
+            if (s.hubFraction > 0f) Box(Modifier.fillMaxWidth(s.hubFraction).height(4.dp).background(Color(0xFF5AC8FA), RoundedCornerShape(2.dp)))
+            val rest = if (s.hubFraction < 1f) ((pct - s.hubFraction) / (1f - s.hubFraction)).coerceIn(0f, 1f) else 0f
+            if (rest > 0f) Box(Modifier.fillMaxWidth(rest).height(4.dp).background(barColor, RoundedCornerShape(2.dp)))
+        }
+        Spacer(Modifier.height(8.dp))
+        val sub = "剩余 ${HubStorage.fmt(s.free)}" + (s.hubBytes?.let { " · SyncHub 占用 ${HubStorage.fmt(it)}" } ?: "")
+        Text(sub, color = Mac.Text2, fontSize = 12.sp)
     }
 }

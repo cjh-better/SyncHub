@@ -15,7 +15,7 @@ import java.net.URLEncoder
 
 /**
  * SyncHub API（synchub_server.py，经 nginx 暴露在 /api/hub/）。
- * 服务端本身不校验身份，这里仍附带 Basic 头（与现有 mac / root 脚本一致，nginx 若加了认证也能通过）。
+ * 服务端要求 HTTP Basic 认证（账号与 SyncClipboard 相同），每个请求都带 Authorization 头。
  */
 class HubClient(
     private val cfg: ServerConfig,
@@ -29,8 +29,11 @@ class HubClient(
             if (!q.isNullOrEmpty()) append("&q=").append(enc(q))
         }
         val o = getJson("/api/hub/items$qs")
-        return parseItems(o.optJSONArray("items"))
+        return parseItems(o.optJSONArray("items")).hubOrder()
     }
+
+    /** 磁盘容量与 SyncHub 占用（需要登录）。 */
+    fun storage(): HubStorage = HubStorage.fromJson(getJson("/api/hub/storage"))
 
     /** 与 Windows / root 脚本相同的增量接口：since_id<=0 时只返回 latestId（不回补历史）。 */
     fun autoPull(sinceId: Long, device: String): AutoPullResult {

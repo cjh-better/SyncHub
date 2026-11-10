@@ -12,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private var receiver: HubAutoReceiver!
     private var pollTimer: Timer?
     private var heartbeatTimer: Timer?
+    private let clipSync = ClipboardSync()
 
     // connection state shown in the menu header
     private var connected: Bool?
@@ -19,6 +20,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private var lastError: String?
     private var recent: [HubItem] = []
     private var recentFetchedAt = Date.distantPast
+    private var storage: HubStorage?              // last known server disk usage (cached; never blocks the menu)
+    private var storageFetchedAt = Date.distantPast
+    private var storageLoading = false
     private var downloading = 0
     private var dragHighlight = false
     private var pendingOpen: [URL] = []
@@ -27,6 +31,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     // MARK: lifecycle
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Only one copy may sync: a second instance (e.g. another SyncHub.app elsewhere on disk) would see the
+        // first one's clipboard writes as local copies and PUT them straight back to the server.
+        if let id = Bundle.main.bundleIdentifier,
+           let other = NSRunningApplication.runningApplications(withBundleIdentifier: id)
+               .first(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier && !$0.isTerminated }) {
+            NSLog("SyncHub: already running (pid \(other.processIdentifier)); this copy quits")
+            other.activate(options: [])
+            NSApp.terminate(nil)
+            return
+        }
         Notifier.shared.setUp()
 
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -45,6 +59,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         uploads.onChange = { [weak self] in self?.updateIcon() }
         uploads.onJobFinished = { [weak self] job in self?.uploadFinished(job) }
 
+        clipSync.onStatus = { [weak self] _ in
+            guard let self = self else { return }
+            if self.menuIsOpen { self.rebuildMenu() }
+        }
+
         setUpStatusItem()
         NSApp.servicesProvider = self
         NSUpdateDynamicServices()
@@ -52,7 +71,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         NotificationCenter.default.addObserver(self, selector: #selector(settingsChanged(_:)),
                                                name: .settingsChanged, object: nil)
         restartTimers()
+        clipSync.restart()
+        // After sleep the network may be gone for a while; restart so polling resumes at the normal rate.
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(didWake(_:)),
+                                                          name: NSWorkspace.didWakeNotification, object: nil)
         refreshRecent(force: true)
+        refreshStorage(force: true)
         launched = true
         if !pendingOpen.isEmpty { handle(pendingOpen); pendingOpen = [] }
         if settings.isFirstRun { SettingsWindowController.shared.show() }
@@ -103,7 +127,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         clientLock.unlock()
         connected = nil; lastError = nil
         restartTimers(); refreshRecent(force: true)
+        storage = nil; refreshStorage(force: true)
+        clipSync.restart()
     }
+
+    @objc private func didWake(_ n: Notification) { clipSync.restart() }
 
     private func restartTimers() {
         pollTimer?.invalidate(); pollTimer = nil
@@ -167,7 +195,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         let img = NSImage(systemSymbolName: symbol, accessibilityDescription: "SyncHub")
         img?.isTemplate = true
         b.image = img
-        b.appearsDisabled = !settings.autoReceive && active.isEmpty && !dragHighlight
+        b.appearsDisabled = !settings.autoReceive && !settings.clipSync && active.isEmpty && !dragHighlight
         b.title = active.isEmpty ? "" : " \(Int(uploads.totalFraction * 100))%"
         b.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
     }
@@ -206,6 +234,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         menuIsOpen = true
         rebuildMenu()
         refreshRecent(force: Date().timeIntervalSince(recentFetchedAt) > 3)
+        refreshStorage(force: false)
     }
     func menuDidClose(_ menu: NSMenu) { menuIsOpen = false }
 
@@ -222,16 +251,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         }
     }
 
+    /// Cached GET /api/hub/storage: at most every 30 s (on menu open), or forced after an upload / settings change.
+    private func refreshStorage(force: Bool) {
+        guard !storageLoading, force || Date().timeIntervalSince(storageFetchedAt) > 30,
+              let c = currentClient() else { return }
+        storageLoading = true
+        c.storage { [weak self] r in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.storageLoading = false
+                self.storageFetchedAt = Date()
+                if case .success(let s) = r, s != self.storage {
+                    self.storage = s
+                    if self.menuIsOpen { self.rebuildMenu() }
+                }
+            }
+        }
+    }
+
+    /// "存储 已用 10.6 GB / 58.9 GB · 剩余 45.3 GB" — small grey line; orange / red when the disk is nearly full.
+    private func storageTitle(_ s: HubStorage) -> NSAttributedString {
+        let color: NSColor = s.usedFraction >= 0.95 ? .systemRed : (s.usedFraction >= 0.85 ? .systemOrange : .secondaryLabelColor)
+        return NSAttributedString(string: s.menuLine, attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: color])
+    }
+
     private func rebuildMenu() {
         menu.removeAllItems()
 
         let header = NSMenuItem()
         header.view = headerView()
         menu.addItem(header)
+        if let s = storage {
+            let st = NSMenuItem(title: s.menuLine, action: nil, keyEquivalent: "")
+            st.isEnabled = false
+            st.attributedTitle = storageTitle(s)
+            if let h = s.hubBytes { st.toolTip = "SyncHub 占用 \(HubStorage.fmt(h)) · 已用 \(Int((s.usedFraction * 100).rounded()))%" }
+            menu.addItem(st)
+        }
 
         let auto = item("自动接收文件", #selector(toggleAutoReceive(_:)))
         auto.state = settings.autoReceive ? .on : .off
         menu.addItem(auto)
+        let clip = item("同步剪贴板", #selector(toggleClipSync(_:)))
+        clip.state = settings.clipSync ? .on : .off
+        clip.toolTip = "在 Mac、Windows、手机之间自动同步复制的文字\(settings.clipImages ? "和图片" : "")"
+        menu.addItem(clip)
+        if settings.clipSync {
+            let st = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+            st.isEnabled = false
+            st.attributedTitle = clipStatusTitle(clipSync.status)
+            menu.addItem(st)
+        }
         menu.addItem(item("打开接收文件夹", #selector(openReceiveFolder(_:)), symbol: "folder"))
         if !uploads.jobs.isEmpty {
             menu.addItem(item("显示发送进度", #selector(showUploads(_:)), symbol: "arrow.up.circle"))
@@ -251,14 +321,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             mi.target = self
             mi.representedObject = it
             mi.attributedTitle = recentTitle(it)
-            mi.image = symbolImage(symbolFor(it))
             mi.toolTip = it.isFile ? "点击下载并打开（按住 ⌥ 改为在 Finder 中显示）" : "点击复制到剪贴板（按住 ⌥ 在网页中查看）"
             menu.addItem(mi)
             let alt = NSMenuItem(title: "", action: #selector(openRecentAlt(_:)), keyEquivalent: "")
             alt.target = self
             alt.representedObject = it
             alt.attributedTitle = recentTitle(it, alt: true)
-            alt.image = symbolImage(it.isFile ? "magnifyingglass" : "safari")
             alt.isAlternate = true
             alt.keyEquivalentModifierMask = .option
             menu.addItem(alt)
@@ -269,9 +337,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         let sendFile = item("发送文件…", #selector(sendFiles(_:)), symbol: "doc.badge.plus")
         sendFile.keyEquivalent = "o"
         menu.addItem(sendFile)
-        let clip = item("发送剪贴板", #selector(sendClipboard(_:)), symbol: "doc.on.clipboard")
-        clip.keyEquivalent = "v"; clip.keyEquivalentModifierMask = [.command, .shift]
-        menu.addItem(clip)
+        let sendClip = item("发送剪贴板", #selector(sendClipboard(_:)), symbol: "doc.on.clipboard")
+        sendClip.keyEquivalent = "v"; sendClip.keyEquivalentModifierMask = [.command, .shift]
+        menu.addItem(sendClip)
         menu.addItem(item("打开 SyncHub 网页", #selector(openWeb(_:)), symbol: "globe"))
 
         menu.addItem(.separator())
@@ -295,26 +363,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         return i
     }
 
-    private func symbolFor(_ it: HubItem) -> String {
-        switch it.category ?? "" {
-        case "文档": return "doc.text"
-        case "视频": return "film"
-        case "压缩包": return "archivebox"
-        case "图片": return "photo"
-        case "安装包": return "shippingbox"
-        case "音频": return "music.note"
-        case "文本": return "text.alignleft"
-        default: return it.isFile ? "doc" : "text.alignleft"
-        }
-    }
-
     private func recentTitle(_ it: HubItem, alt: Bool = false) -> NSAttributedString {
         var name = it.displayName
         if name.count > 34 { name = String(name.prefix(22)) + "…" + String(name.suffix(10)) }
         if alt { name = (it.isFile ? "在 Finder 中显示：" : "在网页中查看：") + name }
         let s = NSMutableAttributedString(string: name, attributes: [.font: NSFont.menuFont(ofSize: 13)])
         var meta: [String] = []
-        if it.pinned == true { meta.append("置顶") } else if it.starred == true { meta.append("★ 收藏") }
+        if it.pinned == true { meta.append("置顶") }
+        if it.starred == true { meta.append("★ 收藏") }
         meta.append(it.fromDevice ?? "")
         if it.isFile, let sz = it.size { meta.append(HubFormat.bytes(sz)) }
         meta.append(HubFormat.relative(it.createdAt))
@@ -323,6 +379,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
                                     attributes: [.font: NSFont.systemFont(ofSize: 11),
                                                  .foregroundColor: NSColor.secondaryLabelColor]))
         return s
+    }
+
+    /// Small grey line under "同步剪贴板": "12:03:11 ↑ 已发送文字（23 字）", red on errors.
+    private func clipStatusTitle(_ st: ClipStatus) -> NSAttributedString {
+        var parts: [String] = []
+        if let t = st.time {
+            let f = DateFormatter(); f.dateFormat = "HH:mm:ss"
+            parts.append(f.string(from: t))
+        }
+        switch st.direction {
+        case .up: parts.append("↑")
+        case .down: parts.append("↓")
+        case .none: break
+        }
+        var text = st.text
+        if text.count > 40 { text = String(text.prefix(39)) + "…" }
+        parts.append(text)
+        return NSAttributedString(string: "      " + parts.joined(separator: " "),
+                                  attributes: [.font: NSFont.systemFont(ofSize: 11),
+                                               .foregroundColor: st.isError ? NSColor.systemRed : NSColor.secondaryLabelColor])
     }
 
     private func headerView() -> NSView {
@@ -338,6 +414,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     @objc func toggleAutoReceive(_ sender: Any?) {
         settings.setAutoReceive(!settings.autoReceive)
+    }
+
+    @objc func toggleClipSync(_ sender: Any?) {
+        settings.setClipSync(!settings.clipSync)
     }
 
     @objc func openReceiveFolder(_ sender: Any?) {
@@ -494,6 +574,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
                 Notifier.shared.post("✅ 发送完成", n > 1 ? "\(n) 个文件已发送到手机与 Windows" : "\(job.name)（\(HubFormat.bytes(job.size))）已发送")
             }
             refreshRecent(force: true)
+            refreshStorage(force: true)
             record(.success(()))
         case .failed(let m):
             Notifier.shared.post("发送失败：\(job.name)", m)

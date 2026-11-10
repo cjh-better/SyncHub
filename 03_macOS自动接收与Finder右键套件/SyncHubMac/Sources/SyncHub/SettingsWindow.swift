@@ -13,6 +13,8 @@ struct SettingsView: View {
     @State private var dir = ""
     @State private var notify = true
     @State private var login = true
+    @State private var clipSync = true
+    @State private var clipImages = true
     @State private var testing = false
     @State private var testResult: (ok: Bool, text: String)?
     @State private var client: HubClient?
@@ -22,7 +24,7 @@ struct SettingsView: View {
             if settings.isFirstRun {
                 HStack(spacing: 10) {
                     Image(systemName: "hand.wave").foregroundColor(.accentColor)
-                    Text("欢迎使用 SyncHub。确认服务器信息后点「保存」，之后它会常驻菜单栏，自动接收其他设备发来的文件。")
+                    Text("欢迎使用 SyncHub。确认服务器信息后点「保存」，之后它会常驻菜单栏，自动接收其他设备发来的文件，并同步剪贴板。")
                         .font(.system(size: 12)).fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(12)
@@ -58,6 +60,15 @@ struct SettingsView: View {
                             NSWorkspace.shared.open(URL(fileURLWithPath: (dir as NSString).expandingTildeInPath))
                         } label: { Image(systemName: "folder") }.help("在 Finder 中打开")
                     }
+                }
+            }
+
+            section("剪贴板同步") {
+                row("") { Toggle("自动同步剪贴板（在 Mac、Windows、手机之间）", isOn: $clipSync) }
+                row("") { Toggle("同时同步图片和截图（20 MB 以内）", isOn: $clipImages).disabled(!clipSync) }
+                row("") {
+                    Text("复制的文字会自动出现在其他设备上，反过来也一样。密码管理器复制的密码不会同步；超过 500 KB 的文字会跳过。")
+                        .font(.system(size: 11)).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
             }
 
@@ -100,6 +111,7 @@ struct SettingsView: View {
         server = settings.serverURL; user = settings.username; pass = settings.password
         autoReceive = settings.autoReceive; dir = settings.receiveDir
         notify = settings.notifications; login = settings.launchAtLogin
+        clipSync = settings.clipSync; clipImages = settings.clipImages
     }
 
     private func test() {
@@ -135,6 +147,8 @@ struct SettingsView: View {
         settings.receiveDir = dir
         settings.notifications = notify
         settings.launchAtLogin = login
+        settings.clipSync = clipSync
+        settings.clipImages = clipImages
         settings.save(password: pass)
         if loginChanged || settings.isFirstRun { LoginItem.set(login) }
         settings.markFirstRunDone()

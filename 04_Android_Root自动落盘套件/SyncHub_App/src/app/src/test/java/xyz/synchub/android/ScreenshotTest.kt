@@ -9,6 +9,7 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import xyz.synchub.android.net.HubItem
+import xyz.synchub.android.net.hubOrder
 import xyz.synchub.android.ui.HomeContent
 import xyz.synchub.android.ui.MainActivity
 import xyz.synchub.android.ui.SyncHubTheme
@@ -34,13 +35,14 @@ class ScreenshotTest {
             HubItem(8, 0, "https://github.com/Jeric-X/SyncClipboard 开源剪贴板同步项目地址", "", 60, "", "2026-11-09 23:30:02", false, false, 3600, "Mac", "文本", false, null),
             HubItem(7, 2, "", "截图_2026-11-08.png", 380_000, "", "2026-11-09 21:02:44", true, false, null, "Android", "图片", true, "/y"),
             HubItem(6, 1, "", "素材合集.zip", 160_000_000, "", "2026-11-09 18:12:00", false, false, 9000, "Mac", "压缩包", true, "/z"),
-        )
+        ).hubOrder()
         val st = RuntimeStatus(serviceRunning = true, connected = true, clipMode = ClipMode.ROOT, rootHelperAlive = true,
             lastPush = "会议纪要：周三下午 3 点评审 UI 改版方案", lastPull = "https://020814.xyz/hub/", lastReceived = "2026Q4_项目周报.pdf")
         compose.setContent {
             SyncHubTheme {
                 HomeContent(st, items, null, false, true, false, "已授权", true, "https://020814.xyz", true,
-                    "/storage/emulated/0/Download/跨端传输", {}, {}, {}, {})
+                    "/storage/emulated/0/Download/跨端传输", {}, {}, {}, {},
+                    storage = xyz.synchub.android.net.HubStorage(63_290_085_376, 11_433_066_496, 48_619_253_760, 262_000_000))
             }
         }
         save("home")

@@ -43,6 +43,48 @@ struct HubItem: Decodable, Equatable {
     }
 }
 
+extension Array where Element == HubItem {
+    /// Same order as the SyncHub web UI / Android: pinned first, then starred, then newest (higher id) first.
+    func hubOrdered() -> [HubItem] {
+        sorted { a, b in
+            let ap = a.pinned == true, bp = b.pinned == true
+            if ap != bp { return ap }
+            let ast = a.starred == true, bst = b.starred == true
+            if ast != bst { return ast }
+            return a.id > b.id
+        }
+    }
+}
+
+/// GET /api/hub/storage — disk of the server's data directory (+ how much of it SyncHub itself uses).
+struct HubStorage: Decodable, Equatable {
+    let total: Int64
+    let used: Int64
+    let free: Int64
+    let hubBytes: Int64?
+
+    var usedFraction: Double { total > 0 ? min(1, max(0, Double(used) / Double(total))) : 0 }
+
+    /// 1024-based, same as the web UI / Android ("10.6 GB"); ≥ 100 shown without decimals.
+    static func fmt(_ b: Int64) -> String {
+        let v = Double(max(0, b))
+        let k = 1024.0
+        let units: [(Double, String)] = [(k * k * k * k, "TB"), (k * k * k, "GB"), (k * k, "MB"), (k, "KB")]
+        for (u, name) in units where v >= u {
+            let x = v / u
+            return x >= 100 ? "\(Int(x.rounded())) \(name)" : String(format: "%.1f %@", x, name)
+        }
+        return "\(Int(v)) B"
+    }
+
+    /// Menu line: "存储 已用 10.6 GB / 58.9 GB · 剩余 45.3 GB"
+    var menuLine: String { "存储 已用 \(HubStorage.fmt(used)) / \(HubStorage.fmt(total)) · 剩余 \(HubStorage.fmt(free))" }
+}
+private struct HubStorageResponse: Decodable {
+    let ok: Bool?; let total: Int64?; let used: Int64?; let free: Int64?; let hubBytes: Int64?
+    let storage: HubStorage?
+}
+
 struct HubItemsResponse: Decodable { let ok: Bool?; let items: [HubItem]?; let retentionHours: Int? }
 struct HubAutoPullResponse: Decodable { let ok: Bool?; let latestId: Int?; let items: [HubItem]? }
 struct HubItemResponse: Decodable { let ok: Bool?; let item: HubItem?; let error: String? }
@@ -213,7 +255,7 @@ final class HubClient: NSObject, URLSessionDataDelegate {
         c.timeoutIntervalForRequest = 20
         c.timeoutIntervalForResource = 60
         c.requestCachePolicy = .reloadIgnoringLocalCacheData
-        c.httpAdditionalHeaders = ["User-Agent": "SyncHub-Mac/1.0"]
+        c.httpAdditionalHeaders = ["User-Agent": "SyncHub-Mac/1.1.1"]
         return URLSession(configuration: c)
     }()
     /// Large transfers: long resource timeout (server allows up to 1 GB, nginx read timeout 3600 s).
@@ -221,7 +263,7 @@ final class HubClient: NSObject, URLSessionDataDelegate {
         let c = URLSessionConfiguration.ephemeral
         c.timeoutIntervalForRequest = 120
         c.timeoutIntervalForResource = 4 * 3600
-        c.httpAdditionalHeaders = ["User-Agent": "SyncHub-Mac/1.0"]
+        c.httpAdditionalHeaders = ["User-Agent": "SyncHub-Mac/1.1.1"]
         return URLSession(configuration: c, delegate: self, delegateQueue: delegateQueue)
     }()
 
@@ -282,11 +324,25 @@ final class HubClient: NSObject, URLSessionDataDelegate {
 
     // MARK: API
 
-    /// GET /api/hub/items?limit=N  (pinned first, newest first)
+    /// GET /api/hub/items?limit=N  (pinned, then starred, then newest — re-sorted here so older servers match too)
     func listItems(limit: Int = 15, completion: @escaping (Result<[HubItem], HubError>) -> Void) {
         do {
             let req = request(try url("/api/hub/items", query: [("limit", String(limit))]))
-            getJSON(req, HubItemsResponse.self) { r in completion(r.map { $0.items ?? [] }) }
+            getJSON(req, HubItemsResponse.self) { r in completion(r.map { ($0.items ?? []).hubOrdered() }) }
+        } catch { completion(.failure(error as? HubError ?? .local("\(error)"))) }
+    }
+
+    /// GET /api/hub/storage  {"total","used","free","hubBytes"} (flat, or nested under "storage")
+    func storage(completion: @escaping (Result<HubStorage, HubError>) -> Void) {
+        do {
+            let req = request(try url("/api/hub/storage"))
+            getJSON(req, HubStorageResponse.self) { r in
+                completion(r.flatMap { s in
+                    if let n = s.storage { return .success(n) }
+                    guard let t = s.total, let u = s.used else { return .failure(.decoding("缺少 total/used")) }
+                    return .success(HubStorage(total: t, used: u, free: s.free ?? max(0, t - u), hubBytes: s.hubBytes))
+                })
+            }
         } catch { completion(.failure(error as? HubError ?? .local("\(error)"))) }
     }
 
@@ -354,7 +410,7 @@ final class HubClient: NSObject, URLSessionDataDelegate {
         let session = URLSession(configuration: {
             let c = URLSessionConfiguration.ephemeral
             c.timeoutIntervalForRequest = 120; c.timeoutIntervalForResource = 4 * 3600
-            c.httpAdditionalHeaders = ["User-Agent": "SyncHub-Mac/1.0"]
+            c.httpAdditionalHeaders = ["User-Agent": "SyncHub-Mac/1.1.1"]
             return c
         }())
         let task = session.downloadTask(with: req) { tmp, resp, err in

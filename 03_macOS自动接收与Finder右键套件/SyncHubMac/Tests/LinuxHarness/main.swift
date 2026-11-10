@@ -1,6 +1,6 @@
 // Linux test harness for HubCore.swift (run against a LOCAL synchub_server.py only).
 // Build: swiftc ../../Sources/SyncHub/HubCore.swift main.swift -o harness
-// Run:   ./harness http://127.0.0.1:PORT /tmp/workdir
+// Run:   ./harness http://127.0.0.1:PORT /tmp/workdir [USER PASS]   (server requires Basic auth since 2026-11-10)
 import Foundation
 #if canImport(FoundationNetworking)
 import FoundationNetworking
@@ -23,12 +23,17 @@ func makeFile(_ name: String, _ size: Int) -> URL {
     var d = Data(count: size); for i in stride(from: 0, to: size, by: 4096) { d[i] = UInt8(i / 4096 % 251) }
     try! d.write(to: u); return u
 }
-let mac = HubClient(config: HubConfig(baseURL: base + "/", device: "Mac"))
-let win = HubClient(config: HubConfig(baseURL: base, device: "Windows"))
+let hu = args.count > 4 ? args[3] : "", hp = args.count > 4 ? args[4] : ""
+let mac = HubClient(config: HubConfig(baseURL: base + "/", username: hu, password: hp, device: "Mac"))
+let win = HubClient(config: HubConfig(baseURL: base, username: hu, password: hp, device: "Windows"))
+
+// (No 401 test here: on Linux, FoundationNetworking waits forever on a 401 that carries WWW-Authenticate
+//  when no session delegate answers the challenge. macOS returns the 401 normally; the clip harness covers it.)
 
 // 1. list
 let l: Result<[HubItem], HubError> = wait { mac.listItems(limit: 50, completion: $0) }
 if case .success(let items) = l { check("listItems decodes seeded items (\(items.count))", items.count >= 8)
+    check("listItems order: pinned, then starred, then newest", items == items.hubOrdered())
     check("displayName for text = first line", items.contains { $0.type == 0 && $0.displayName == "https://github.com/Jeric-X/SyncClipboard" })
 } else { check("listItems \(l)", false) }
 
@@ -138,12 +143,28 @@ let authed = HubClient(config: HubConfig(baseURL: "example.com", username: "u", 
 let req = authed.request(try! authed.url("/api/hub/items"))
 check("basic auth header", req.value(forHTTPHeaderField: "Authorization") == "Basic " + Data("u:p:w".utf8).base64EncodedString())
 check("scheme defaults to https", req.url?.absoluteString == "https://example.com/api/hub/items")
-check("no auth header when username empty", mac.request(try! mac.url("/x")).value(forHTTPHeaderField: "Authorization") == nil)
+let anon = HubClient(config: HubConfig(baseURL: base))
+check("no auth header when username empty", anon.request(try! anon.url("/x")).value(forHTTPHeaderField: "Authorization") == nil)
 let dead = HubClient(config: HubConfig(baseURL: "http://127.0.0.1:1"))
 let de: Result<[HubItem], HubError> = wait { dead.listItems(completion: $0) }
 if case .failure(.network) = de { check("unreachable server -> network error", true) } else { check("unreachable \(de)", false) }
-let nf: Result<[HubItem], HubError> = wait { HubClient(config: HubConfig(baseURL: base + "/nope")).listItems(completion: $0) }
+let nf: Result<[HubItem], HubError> = wait { HubClient(config: HubConfig(baseURL: base + "/nope", username: hu, password: hp)).listItems(completion: $0) }
 if case .failure(.http(404, _)) = nf { check("404 mapped: \(nf.mapError { $0 }) ", true) } else { check("404 \(nf)", false) }
+// 1.1.1: ordering + storage
+func mk(_ id: Int, pinned: Bool = false, starred: Bool = false) -> HubItem {
+    try! JSONDecoder().decode(HubItem.self, from: Data("{\"id\":\(id),\"type\":0,\"text\":\"t\(id)\",\"pinned\":\(pinned),\"starred\":\(starred)}".utf8))
+}
+let ord = [mk(1), mk(2, starred: true), mk(3, pinned: true), mk(4), mk(5, pinned: true, starred: true), mk(6, starred: true)].hubOrdered().map { $0.id }
+check("hubOrdered pinned→starred→newest \(ord)", ord == [5, 3, 6, 2, 4, 1])
+let sr: Result<HubStorage, HubError> = wait { mac.storage(completion: $0) }
+if case .success(let s) = sr {
+    check("GET /api/hub/storage decodes (\(s.menuLine))", s.total > 0 && s.used > 0 && s.free >= 0 && s.used <= s.total && s.menuLine.hasPrefix("存储 已用 "))
+} else { check("storage \(sr)", false) }
+let fixed = HubStorage(total: 63_290_085_376, used: 11_433_066_496, free: 48_619_253_760, hubBytes: 262_000_000)
+check("storage menu line = \(fixed.menuLine)", fixed.menuLine == "存储 已用 10.6 GB / 58.9 GB · 剩余 45.3 GB")
+check("storage fmt MB / TB / ≥100 GB", HubStorage.fmt(262_000_000) == "250 MB" && HubStorage.fmt(2 * 1_099_511_627_776) == "2.0 TB" && HubStorage.fmt(150 * 1_073_741_824) == "150 GB")
+check("usedFraction", abs(fixed.usedFraction - 0.1806) < 0.001 && HubStorage(total: 0, used: 0, free: 0, hubBytes: nil).usedFraction == 0)
+
 check("format bytes", HubFormat.bytes(1536) == "1 KB" && HubFormat.bytes(5_242_880) == "5.00 MB")
 check("safeFilename strips path", HubFormat.safeFilename("../../etc/passwd", fallback: "x") == "passwd" && HubFormat.safeFilename("..", fallback: "x") == "x")
 

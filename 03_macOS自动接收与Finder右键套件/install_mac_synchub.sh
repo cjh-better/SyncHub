@@ -348,6 +348,7 @@ if [ "$MODE" = "app" ]; then
     echo
     say "✅ 安装完成"
     echo "  • 菜单栏图标：最近项目、发送文件、发送剪贴板、设置；把文件拖到图标上即可发送"
+    echo "  • 剪贴板：自动和 Windows、手机双向同步（菜单栏 →「同步剪贴板」可开关，密码管理器复制的密码不会同步）"
     echo "  • Finder 右键 → 快速操作 → $WF_NAME"
     echo "  • 任意 App 选中文字 → 右键 / 应用菜单 → 服务 → 发送到 SyncHub"
     echo "  • 收到的文件保存在: $RECV_DIR"

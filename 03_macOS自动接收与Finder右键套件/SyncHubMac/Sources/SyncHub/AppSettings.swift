@@ -11,6 +11,7 @@ final class AppSettings: ObservableObject {
     private enum K {
         static let server = "serverURL", user = "username", auto = "autoReceive", dir = "receiveDir"
         static let notify = "notifications", login = "launchAtLogin", firstRun = "didFirstRun", interval = "pollSeconds"
+        static let clip = "clipSync", clipImages = "clipImages"
     }
 
     @Published var serverURL: String
@@ -19,6 +20,10 @@ final class AppSettings: ObservableObject {
     @Published var receiveDir: String
     @Published var notifications: Bool
     @Published var launchAtLogin: Bool
+    /// Automatic two-way clipboard sync with Windows / Android (SyncClipboard.json). On by default.
+    @Published var clipSync: Bool
+    /// Also sync copied images / screenshots (only when clipSync is on).
+    @Published var clipImages: Bool
     /// Cached in memory so the 3-second poll never hits the Keychain.
     private(set) var password: String
 
@@ -28,7 +33,8 @@ final class AppSettings: ObservableObject {
     private init() {
         let d = UserDefaults.standard
         d.register(defaults: [K.server: AppSettings.defaultServer, K.user: "", K.auto: true,
-                              K.dir: AppSettings.defaultReceiveDir, K.notify: true, K.login: true, K.interval: 3.0])
+                              K.dir: AppSettings.defaultReceiveDir, K.notify: true, K.login: true, K.interval: 3.0,
+                              K.clip: true, K.clipImages: true])
         let user = d.string(forKey: K.user) ?? ""
         serverURL = d.string(forKey: K.server) ?? AppSettings.defaultServer
         username = user
@@ -36,6 +42,8 @@ final class AppSettings: ObservableObject {
         receiveDir = d.string(forKey: K.dir) ?? AppSettings.defaultReceiveDir
         notifications = d.bool(forKey: K.notify)
         launchAtLogin = d.bool(forKey: K.login)
+        clipSync = d.bool(forKey: K.clip)
+        clipImages = d.bool(forKey: K.clipImages)
         password = user.isEmpty ? "" : (Keychain.read(account: user) ?? "")
     }
 
@@ -59,6 +67,8 @@ final class AppSettings: ObservableObject {
         d.set(receiveDir, forKey: K.dir)
         d.set(notifications, forKey: K.notify)
         d.set(launchAtLogin, forKey: K.login)
+        d.set(clipSync, forKey: K.clip)
+        d.set(clipImages, forKey: K.clipImages)
         if !oldUser.isEmpty && oldUser != user { Keychain.delete(account: oldUser) }
         if let p = newPassword {
             if user.isEmpty { password = "" }
@@ -71,6 +81,11 @@ final class AppSettings: ObservableObject {
 
     func setAutoReceive(_ on: Bool) {
         autoReceive = on; d.set(on, forKey: K.auto)
+        NotificationCenter.default.post(name: .settingsChanged, object: nil)
+    }
+
+    func setClipSync(_ on: Bool) {
+        clipSync = on; d.set(on, forKey: K.clip)
         NotificationCenter.default.post(name: .settingsChanged, object: nil)
     }
 }
