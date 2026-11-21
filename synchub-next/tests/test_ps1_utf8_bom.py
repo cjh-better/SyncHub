@@ -44,6 +44,17 @@ class Ps1EncodingTest(unittest.TestCase):
         self.assertNotIn("Start-Sleep -Milliseconds 800", text)
         self.assertLess(text.index("function Request-OfficialExit"), text.index('op = "trial"'))
 
+    def test_installer_quarantines_only_known_jni_files(self):
+        text = (ROOT / "scripts" / "install_windows.ps1").read_text(encoding="utf-8-sig")
+        self.assertIn("dartjni.dll", text)
+        self.assertIn("jvm.dll", text)
+        self.assertIn("ReparsePoint", text)
+        self.assertIn("-LiteralPath", text)
+        self.assertIn("$QuarantineJniOnly", text)
+        self.assertIn("$RestoreJni", text)
+        self.assertIn("preservedOtherDlls", text)
+        self.assertNotIn("*.dll", text)
+
 
 if __name__ == "__main__":
     unittest.main()

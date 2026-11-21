@@ -82,6 +82,24 @@ powershell -ExecutionPolicy Bypass -File .\scripts\windows_single_tray.ps1 -Roll
 
 Windows 包不附带 `dartjni.dll` 或 `jvm.dll`。这两个文件来自 Android 插件的 JNI 依赖。Windows 上的路径、偏好和文件选择不走 JNI。打包步骤会删掉该 DLL，并从 `native_assets.json` / `NativeAssetsManifest.json` 里去掉对应条目；删不干净则构建失败。
 
+新包本身没有这两个文件。覆盖安装不会自动删掉上一个版本留在安装目录里的同名文件，所以升级后目录可能仍有旧的 `dartjni.dll`。程序不因为这个旧文件还在就无法运行。安装器会只把安装目录根下的 `dartjni.dll` 和 `jvm.dll` 移到 `%LOCALAPPDATA%\Programs\SyncHub-upgrade\<时间>`，并写下 `install-manifest.json`。符号链接只移动链接本身，不打开、不删除链接目标。其他 DLL 不动。已经装好、只想补做这一步时：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_windows.ps1 -QuarantineJniOnly
+```
+
+需要放回时：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_windows.ps1 -RestoreJni
+```
+
+目标位置已经有同名文件时，恢复会拒绝覆盖。
+
+## 图片和文件的 profile 哈希
+
+`Image` 和 `File` 的 `Hash` 是 `SHA256(文件名|内容 SHA-256)`，大写十六进制。内容哈希放在 `transferDataHash`。把内容哈希写进 `Hash` 会得到 HTTP 400，这是对端拒绝了错误的 profile，不是客户端没有收到文件。本地夹具用 `syntheticBinaryProfile`。已核对的外发例子：`SyncHub-test-a1475258-6702-441d-b8ee-f4ee1a0dc346-png-out.png` 的内容哈希 `83F10DFA…1D63` 对应 profile `B1BA9D22…4B59`。
+
 ## 图标
 
 文本源码里没有 `app/windows/runner/resources/app_icon.ico`（二进制文件未随快照导出）。当前构建不引用这个文件，窗口和托盘使用 Windows 自带的应用程序图标。若要沿用原来的图标，把该文件放回这个路径，并取消 `app/windows/runner/Runner.rc` 里对应一行的注释。

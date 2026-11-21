@@ -37,8 +37,32 @@ String sha256TextUpper(String text) => sha256Upper(utf8.encode(text));
 
 /// SyncClipboard v3.1.1 / v3.3.3 profile hash for `Image` and `File` entries:
 /// `SHA256_UPPER(UTF8("$fileName|$contentHashUpper"))`.
+///
+/// The profile `Hash` is not the file's own SHA-256. A peer that writes the
+/// content hash into `Hash` is rejected by the official server.
 String fileProfileHash(String fileName, String contentHash) =>
     sha256TextUpper('$fileName|${contentHash.toUpperCase()}');
+
+/// Body a synthetic peer must PUT for an `Image` or `File` profile.
+ClipProfile syntheticBinaryProfile({
+  required String type,
+  required String fileName,
+  required List<int> bytes,
+}) {
+  if (type != 'Image' && type != 'File') {
+    throw ArgumentError.value(type, 'type', 'expected Image or File');
+  }
+  final contentHash = sha256Upper(bytes);
+  return ClipProfile(
+    type: type,
+    hash: fileProfileHash(fileName, contentHash),
+    text: fileName,
+    hasData: true,
+    dataName: fileName,
+    transferDataHash: contentHash,
+    size: bytes.length,
+  );
+}
 
 /// Strict RFC 3986 percent-encoding for `/file/<name>` segments:
 /// only ASCII unreserved `[A-Za-z0-9-._~]` stay literal; spaces become `%20`

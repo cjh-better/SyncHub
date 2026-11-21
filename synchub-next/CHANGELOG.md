@@ -2,6 +2,8 @@
 
 ## 1.1.3+9
 
+- 覆盖安装会把旧构建留下的 `dartjni.dll` 和 `jvm.dll` 先移到 `%LOCALAPPDATA%\Programs\SyncHub-upgrade`，不跟随符号链接，也不动其他 DLL。`-QuarantineJniOnly` 只做这一步。`-RestoreJni` 可以按清单移回。旧文件还在不表示程序已经损坏；移走是为了和干净安装一致。
+- 图片和文件的 profile `Hash` 是 `SHA256(文件名|内容哈希)`。把内容哈希直接写进 `Hash` 会被服务端拒绝。外发夹具必须用 `syntheticBinaryProfile`。
 - 试用在 SyncClipboard 退出后会清掉 Abort 留下的暂停，并开始监视。暂停期间变化的剪贴板会外发，不再被当成启动基线。
 - Windows 剪贴板通知只有序号、没有 `type`。1.1.2+8 丢掉了这种通知，所以试用后 30 秒内看不到文字上传。1.1.3+9 会处理它。
 - 试用开始监视时，剪贴板改走官方账号的 `SyncClipboard.json`。网关的 `/api/hub/sc` 不是这个地址。

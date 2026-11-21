@@ -7,7 +7,10 @@ param(
     [switch]$Yes,
     [switch]$NoLaunch,
     [switch]$NoDesktopShortcut,
-    [switch]$SkipLegacyDisable
+    [switch]$SkipLegacyDisable,
+    [switch]$QuarantineJniOnly,
+    [switch]$RestoreJni,
+    [string]$JniBackupDir = ""
 )
 
 Set-StrictMode -Version Latest
@@ -27,6 +30,122 @@ function Write-Ok([string]$Msg) {
 
 function Write-Warn([string]$Msg) {
     Write-Host "  [!] $Msg" -ForegroundColor Yellow
+}
+
+function Test-DirectInstallChild([string]$Root, [string]$Name) {
+    if ($Name -ne "dartjni.dll" -and $Name -ne "jvm.dll") { return $false }
+    if ($Name.Contains("\") -or $Name.Contains("/") -or $Name.Contains("..")) { return $false }
+    $rootFull = [System.IO.Path]::GetFullPath(($Root.TrimEnd("\") + "\"))
+    $candidate = [System.IO.Path]::GetFullPath((Join-Path $Root $Name))
+    $parent = [System.IO.Path]::GetDirectoryName($candidate)
+    $parentFull = [System.IO.Path]::GetFullPath(($parent.TrimEnd("\") + "\"))
+    return $parentFull -eq $rootFull
+}
+
+function Get-FileSha256IfRegular([string]$Path) {
+    $item = Get-Item -LiteralPath $Path -Force
+    if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { return $null }
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+    try {
+        return ([System.BitConverter]::ToString($sha.ComputeHash($stream))).Replace("-", "")
+    } finally {
+        $stream.Dispose()
+        $sha.Dispose()
+    }
+}
+
+function Move-StaleJniProgramFiles([string]$Root) {
+    $rootItem = Get-Item -LiteralPath $Root -Force
+    if ($rootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+        throw (U "\u5B89\u88C5\u76EE\u5F55\u662F\u7B26\u53F7\u94FE\u63A5\uFF0C\u5DF2\u62D2\u7EDD\u79FB\u52A8\u6587\u4EF6\u3002")
+    }
+    $stamp = (Get-Date).ToUniversalTime().ToString("yyyyMMddTHHmmssZ")
+    $backup = Join-Path (Join-Path $env:LOCALAPPDATA "Programs\SyncHub-upgrade") $stamp
+    $moved = @()
+    foreach ($name in @("dartjni.dll", "jvm.dll")) {
+        if (-not (Test-DirectInstallChild -Root $Root -Name $name)) {
+            throw (U "\u62D2\u7EDD\u5904\u7406\u5B89\u88C5\u76EE\u5F55\u4E4B\u5916\u7684\u6587\u4EF6\u3002")
+        }
+        $source = Join-Path $Root $name
+        if (-not (Test-Path -LiteralPath $source)) { continue }
+        $item = Get-Item -LiteralPath $source -Force
+        $isLink = [bool]($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)
+        if (-not $isLink -and -not $item.PSIsContainer) {
+            # Regular file. Hash it before the move. Do not open a reparse point.
+        } elseif ($item.PSIsContainer) {
+            throw ((U "\u62D2\u7EDD\u79FB\u52A8\u975E\u7A0B\u5E8F\u6587\u4EF6: ") + $name)
+        }
+        New-Item -ItemType Directory -Force -Path $backup | Out-Null
+        $dest = Join-Path $backup $name
+        $sha = $null
+        $bytes = $null
+        if (-not $isLink) {
+            $sha = Get-FileSha256IfRegular $source
+            $bytes = $item.Length
+        }
+        [System.IO.File]::Move($source, $dest)
+        $moved += [ordered]@{
+            name = $name
+            symlink = $isLink
+            sha256 = $sha
+            bytes = $bytes
+        }
+    }
+    if ($moved.Count -gt 0) {
+        $record = @{ kind = "stale-jni-program-files"; files = $moved }
+        $record | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $backup "quarantine-manifest.json") -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $Root "jni-quarantine.txt") -Value $backup -Encoding ASCII
+        Write-Ok ((U "\u5DF2\u9694\u79BB\u65E7\u7684 JNI \u7A0B\u5E8F\u6587\u4EF6\u5230 ") + $backup)
+    } else {
+        Write-Ok (U "\u5B89\u88C5\u76EE\u5F55\u6CA1\u6709\u65E7\u7684 dartjni.dll \u6216 jvm.dll\u3002")
+    }
+    $manifest = @{
+        kind = "synchub-install"
+        liveJniFiles = @()
+        quarantinedProgramFiles = $moved
+        preservedOtherDlls = $true
+        quarantineDir = $(if ($moved.Count -gt 0) { $backup } else { "" })
+    }
+    $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $Root "install-manifest.json") -Encoding UTF8
+    Write-Ok (U "\u5176\u4ED6 DLL \u672A\u6539\u52A8\u3002\u65E7 JNI \u6587\u4EF6\u4E0D\u8868\u793A\u7A0B\u5E8F\u5DF2\u635F\u574F\uFF0C\u53EA\u662F\u4E0E\u5E72\u51C0\u5B89\u88C5\u4FDD\u6301\u4E00\u81F4\u3002")
+}
+
+function Restore-StaleJniProgramFiles([string]$Root, [string]$BackupDir) {
+    $rootItem = Get-Item -LiteralPath $Root -Force
+    if ($rootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+        throw (U "\u5B89\u88C5\u76EE\u5F55\u662F\u7B26\u53F7\u94FE\u63A5\uFF0C\u5DF2\u62D2\u7EDD\u6062\u590D\u3002")
+    }
+    if ([string]::IsNullOrWhiteSpace($BackupDir)) {
+        $pointer = Join-Path $Root "jni-quarantine.txt"
+        if (Test-Path -LiteralPath $pointer) {
+            $BackupDir = (Get-Content -LiteralPath $pointer -Raw).Trim()
+        }
+    }
+    $manifestPath = Join-Path $BackupDir "quarantine-manifest.json"
+    if (-not (Test-Path -LiteralPath $manifestPath)) {
+        throw (U "\u627E\u4E0D\u5230\u9694\u79BB\u6E05\u5355\uFF0C\u672A\u6062\u590D\u4EFB\u4F55\u6587\u4EF6\u3002")
+    }
+    $record = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    foreach ($entry in @($record.files)) {
+        $name = [string]$entry.name
+        if ($name -ne "dartjni.dll" -and $name -ne "jvm.dll") {
+            throw ((U "\u62D2\u7EDD\u6062\u590D\u975E JNI \u7A0B\u5E8F\u6587\u4EF6: ") + $name)
+        }
+        if (-not (Test-DirectInstallChild -Root $Root -Name $name)) {
+            throw (U "\u62D2\u7EDD\u6062\u590D\u5230\u5B89\u88C5\u76EE\u5F55\u4E4B\u5916\u3002")
+        }
+        $dest = Join-Path $Root $name
+        if (Test-Path -LiteralPath $dest) {
+            throw ((U "\u76EE\u6807\u5DF2\u5B58\u5728\uFF0C\u62D2\u7EDD\u8986\u76D6: ") + $name)
+        }
+        $source = Join-Path $BackupDir $name
+        if (-not (Test-Path -LiteralPath $source)) {
+            throw ((U "\u5907\u4EFD\u7F3A\u5C11: ") + $name)
+        }
+        [System.IO.File]::Move($source, $dest)
+        Write-Ok ((U "\u5DF2\u6062\u590D\u7A0B\u5E8F\u6587\u4EF6 ") + $name)
+    }
 }
 
 function Test-IsAdmin {
@@ -147,6 +266,18 @@ Get-CimInstance Win32_Process -Filter "Name = 'python.exe' OR Name = 'pythonw.ex
         -ArgumentList @("-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-EncodedCommand", $encoded) | Out-Null
 }
 
+if ($QuarantineJniOnly -or $RestoreJni) {
+    if (-not (Test-Path -LiteralPath $InstallDir)) {
+        throw (U "\u627E\u4E0D\u5230\u5B89\u88C5\u76EE\u5F55\uFF0C\u672A\u6539\u52A8\u4EFB\u4F55\u6587\u4EF6\u3002")
+    }
+    if ($RestoreJni) {
+        Restore-StaleJniProgramFiles -Root $InstallDir -BackupDir $JniBackupDir
+    } else {
+        Move-StaleJniProgramFiles -Root $InstallDir
+    }
+    return
+}
+
 Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host ("  " + (U "SyncHub Windows \u4E00\u952E\u5B89\u88C5\u4E0E\u8FC1\u79FB\u7A0B\u5E8F")) -ForegroundColor Cyan
 Write-Host "============================================================" -ForegroundColor Cyan
@@ -184,6 +315,7 @@ try {
         Copy-Item -Path (Join-Path $resolvedSrc "*") -Destination $InstallDir -Recurse -Force
         Write-Ok ((U "\u7A0B\u5E8F\u6587\u4EF6\u5DF2\u5B89\u88C5\u5230 ") + $targetExe)
     }
+    Move-StaleJniProgramFiles -Root $InstallDir
 } finally {
     if ($srcInfo.Temp -and (Test-Path -LiteralPath $resolvedSrc)) {
         Remove-Item -LiteralPath $resolvedSrc -Recurse -Force -ErrorAction SilentlyContinue

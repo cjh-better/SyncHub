@@ -174,6 +174,28 @@ void main() {
   // 1. Exact SHA-256 Uppercase Vectors & SyncClipboard URL Encoding
   // =========================================================================
   group('SHA-256 uppercase vectors & filename encoding', () {
+    test('Image and File profile hash is name plus content hash', () {
+      const imageName = 'SyncHub-test-a1475258-6702-441d-b8ee-f4ee1a0dc346-png-out.png';
+      const imageContent = '83F10DFAF57C9DE78004BC7C8C8753F9E7D345082EDD6EEA70D22059A1A71D63';
+      const imageProfile = 'B1BA9D228E3AB4ACE17EFF371AEE643D8235A8D47435CC775894DE25218B4B59';
+      expect(fileProfileHash(imageName, imageContent), imageProfile);
+      expect(imageProfile, isNot(imageContent));
+
+      const fileName = 'SyncHub-test-b0501915-5ff3-42d3-b1b2-e43402ad0849-file-out.txt';
+      const fileContent = '3643A9C25E07A91F41958EB914D618E0E07E4DC502EF964B50120F8C6EC5C8B3';
+      const fileProfile = '8DA7DF15C8961770B77EBD459F9F7CE19242E163BD3E9B5C237B3CF2317D2A9A';
+      expect(fileProfileHash(fileName, fileContent), fileProfile);
+      expect(fileProfile, isNot(fileContent));
+
+      final bytes = Uint8List.fromList(<int>[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a]);
+      final inbound = syntheticBinaryProfile(type: 'Image', fileName: 'fixture.png', bytes: bytes);
+      expect(inbound.hash, fileProfileHash('fixture.png', sha256Upper(bytes)));
+      expect(inbound.hash, isNot(inbound.transferDataHash));
+      expect(inbound.transferDataHash, sha256Upper(bytes));
+      expect(inbound.hasData, isTrue);
+      expect(inbound.dataName, 'fixture.png');
+    });
+
     test('matches NIST, Python hashlib, and SyncClipboard v3.3.3 vectors', () {
       expect(
         sha256Upper(const <int>[]),
