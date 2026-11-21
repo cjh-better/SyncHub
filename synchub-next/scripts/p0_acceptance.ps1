@@ -1,4 +1,4 @@
-# P0 acceptance test: 2 GB file over the relay with a hard-killed receiver
+﻿# P0 acceptance test: 2 GB file over the relay with a hard-killed receiver
 # AND a hard-killed sender in the middle, then SHA-256 comparison.
 #   powershell -ExecutionPolicy Bypass -File scripts\p0_acceptance.ps1 [-SizeMB 2048] [-LimitMBps 150]
 param(

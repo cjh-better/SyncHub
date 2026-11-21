@@ -1,4 +1,4 @@
-# SyncHub single-tray handover for the NEXT run on the Windows PC.
+﻿# SyncHub single-tray handover for the NEXT run on the Windows PC.
 # Default is backup only. -Takeover requires -Confirm.
 # This script never deletes SyncClipboard.exe, SyncClipboard.json, history, or received files.
 param(

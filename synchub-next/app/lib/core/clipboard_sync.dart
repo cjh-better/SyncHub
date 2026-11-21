@@ -610,8 +610,11 @@ class FileClipStateStore implements ClipStateStore {
     unawaited(flush());
   }
 
+  bool _sealed = false;
+
   @override
   Future<void> flush() {
+    if (_sealed) return _writeChain;
     final snapshot = <String, dynamic>{
       'endpoints': _endpoints.map(
         (k, v) => MapEntry<String, dynamic>(k, <String, dynamic>{
@@ -628,6 +631,12 @@ class FileClipStateStore implements ClipStateStore {
         await tmp.rename(file.path);
       } catch (_) {}
     });
+    return _writeChain;
+  }
+
+  /// Finishes writes already queued, then ignores later flushes.
+  Future<void> seal() {
+    _sealed = true;
     return _writeChain;
   }
 }
@@ -1597,6 +1606,7 @@ class ClipboardSync extends ChangeNotifier {
   bool _syncImages;
   bool _syncFiles;
   bool _yieldToOfficial = false;
+  Future<void> _pending = Future<void>.value();
   bool _screenOff = false;
   bool _running = false;
   int _lifecycleGen = 0;
@@ -1806,16 +1816,16 @@ class ClipboardSync extends ChangeNotifier {
       } else if (type == 'clipboard_text') {
         final text = evt['text'] as String?;
         if (_enabled && text != null && text.isNotEmpty) {
-          unawaited(_pushPayload(ClipboardTextPayload(text)).catchError((Object _) => null));
+          _track(_pushPayload(ClipboardTextPayload(text)));
         }
       } else if (type == 'clipboard_image') {
         final bytes = evt['bytes'];
         if (_enabled && _syncImages && bytes is Uint8List && bytes.isNotEmpty) {
           final name = (evt['fileName'] as String?) ?? PlatformClipboardAdapter._defaultImageFileName();
-          unawaited(_pushPayload(ClipboardImagePayload(name, bytes)).catchError((Object _) => null));
+          _track(_pushPayload(ClipboardImagePayload(name, bytes)));
         }
       } else if (type == 'clipboard' || type == 'clipboard_changed') {
-        unawaited(pollLocalOnce());
+        _track(pollLocalOnce());
       }
     });
 
@@ -1823,12 +1833,16 @@ class ClipboardSync extends ChangeNotifier {
       _localTimer?.cancel();
       _localTimer = Timer.periodic(localWatchInterval, (_) {
         if (_running && gen == _lifecycleGen) {
-          unawaited(pollLocalOnce());
+          _track(pollLocalOnce());
         }
       });
     }
 
     _scheduleRemote(const Duration(milliseconds: 200), gen);
+  }
+
+  void _track(Future<Object?> work) {
+    _pending = _pending.then((_) => work.then<void>((_) {})).catchError((Object _) {});
   }
 
   Future<void> stop() async {
@@ -1840,16 +1854,18 @@ class ClipboardSync extends ChangeNotifier {
     _remoteTimer = null;
     await _eventSub?.cancel();
     _eventSub = null;
+    try {
+      await _pending;
+    } catch (_) {}
     await _stateStore.flush();
+    if (_stateStore is FileClipStateStore) {
+      await (_stateStore as FileClipStateStore).seal();
+    }
   }
 
   @override
   void dispose() {
-    _lifecycleGen++;
-    _running = false;
-    _localTimer?.cancel();
-    _remoteTimer?.cancel();
-    _eventSub?.cancel();
+    unawaited(stop());
     if (_ownsTransport) _transport.close();
     super.dispose();
   }
@@ -2042,15 +2058,19 @@ class ClipboardSync extends ChangeNotifier {
   void _scheduleRemote(Duration delay, int gen) {
     _remoteTimer?.cancel();
     if (!_running || gen != _lifecycleGen) return;
-    _remoteTimer = Timer(delay, () async {
-      if (!_running || gen != _lifecycleGen) return;
-      try {
-        await pollRemoteOnce();
-      } catch (_) {}
-      if (_running && gen == _lifecycleGen) {
-        _scheduleRemote(_remoteBackoff.delay(screenOff: _screenOff), gen);
-      }
+    _remoteTimer = Timer(delay, () {
+      _track(_remoteTick(gen));
     });
+  }
+
+  Future<void> _remoteTick(int gen) async {
+    if (!_running || gen != _lifecycleGen) return;
+    try {
+      await pollRemoteOnce();
+    } catch (_) {}
+    if (_running && gen == _lifecycleGen) {
+      _scheduleRemote(_remoteBackoff.delay(screenOff: _screenOff), gen);
+    }
   }
 
   /// Instant manual/wakeup poll (`"立即同步"`).

@@ -136,13 +136,26 @@ void main() {
     expect(described, isNot(contains('other-secret')));
   });
 
+  test('sealed clip state store does not recreate files after shutdown', () async {
+    final dir = await Directory.systemTemp.createTemp('synchub_seal_');
+    addTearDown(() => deleteOwnedFixture(dir));
+    final file = File(p.join(dir.path, 'clip_state.json'));
+    final store = await FileClipStateStore.load(file, 'ep');
+    store.lastRemoteKey = 'BASE';
+    await store.seal();
+    if (await file.exists()) await file.delete();
+    final partial = File('${file.path}.tmp');
+    if (await partial.exists()) await partial.delete();
+    store.lastRemoteKey = 'AFTER';
+    await store.flush();
+    expect(await file.exists(), isFalse);
+    expect(await partial.exists(), isFalse);
+  });
+
   test('SyncHub pauses clipboard upload while yielding and resumes without pushing the baseline', () async {
     final transport = FakeClipTransport()..setRemoteText('server-init');
     final clip = MemoryClipboardAdapter(initialPayload: const ClipboardTextPayload('local'));
     final tmp = await Directory.systemTemp.createTemp('synchub_yield_');
-    addTearDown(() async {
-      if (await tmp.exists()) await tmp.delete(recursive: true);
-    });
     final svc = ClipboardSync(
       supportDir: tmp.path,
       endpoint: ClipEndpointConfig.custom(serverUrl: 'http://127.0.0.1:9', username: 'u', password: 'fixture-pass'),
@@ -150,7 +163,11 @@ void main() {
       transport: transport,
       localWatchInterval: const Duration(hours: 1),
     );
-    addTearDown(svc.dispose);
+    addTearDown(() async {
+      await svc.stop();
+      svc.dispose();
+      await deleteOwnedFixture(tmp);
+    });
     await svc.start();
     await svc.setYieldToOfficialClient(true);
     expect(svc.yieldsToOfficialClient, isTrue);
@@ -172,9 +189,6 @@ void main() {
     final transport = FakeClipTransport()..setRemoteText('base');
     final clip = MemoryClipboardAdapter();
     final tmp = await Directory.systemTemp.createTemp('synchub_fileclip_');
-    addTearDown(() async {
-      if (await tmp.exists()) await tmp.delete(recursive: true);
-    });
     final bytes = Uint8List.fromList('hello-fixture'.codeUnits);
     const name = 'note.txt';
     final contentHash = sha256Upper(bytes);
@@ -187,7 +201,11 @@ void main() {
       stateStore: MemoryClipStateStore(),
       localWatchInterval: const Duration(hours: 1),
     );
-    addTearDown(svc.dispose);
+    addTearDown(() async {
+      await svc.stop();
+      svc.dispose();
+      await deleteOwnedFixture(tmp);
+    });
     expect(await svc.pollRemoteOnce(), isNull);
     transport.profile = ClipProfile(
       type: 'File',
@@ -219,9 +237,7 @@ void main() {
         throwsA(isA<ClipZipException>()));
 
     final tmp = await Directory.systemTemp.createTemp('synchub_zip_');
-    addTearDown(() async {
-      if (await tmp.exists()) await tmp.delete(recursive: true);
-    });
+    addTearDown(() => deleteOwnedFixture(tmp));
     final badPaths = await stageClipboardPayload(
       supportDir: tmp.path,
       key: 'GROUPBAD',
@@ -305,6 +321,36 @@ Uint8List _storedZip(Map<String, List<int>> files) {
   _u32(out, localBytes.length);
   _u16(out, 0);
   return out.toBytes();
+}
+
+/// Deletes a fixture directory after its owner has stopped writing.
+/// A short retry covers Windows returning "directory not empty" for a file
+/// that just closed. If anything is still there, the error lists those paths.
+Future<void> deleteOwnedFixture(Directory dir) async {
+  for (var attempt = 0; attempt < 6; attempt++) {
+    if (!await dir.exists()) return;
+    try {
+      await dir.delete(recursive: true);
+      return;
+    } on FileSystemException catch (e) {
+      final code = e.osError?.errorCode;
+      final notEmpty = code == 145 || code == 39 || code == 66;
+      if (!notEmpty || attempt == 5) {
+        final leftover = <String>[];
+        if (await dir.exists()) {
+          await for (final entity in dir.list(recursive: true)) {
+            leftover.add(entity.path);
+          }
+        }
+        throw FileSystemException(
+          'fixture still occupied after sync stopped: ${leftover.join(', ')}',
+          dir.path,
+          e.osError,
+        );
+      }
+      await Future<void>.delayed(Duration(milliseconds: 30 * (attempt + 1)));
+    }
+  }
 }
 
 class FakeClipTransport implements ClipTransport {

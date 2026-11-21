@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     SyncHub-Next Master E2E Test Suite PowerShell Wrapper.
 .DESCRIPTION

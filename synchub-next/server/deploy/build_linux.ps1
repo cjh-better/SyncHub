@@ -1,4 +1,4 @@
-# 交叉编译 Linux 版网关与 hubctl（在 Windows 上运行）
+﻿# 交叉编译 Linux 版网关与 hubctl（在 Windows 上运行）
 $ErrorActionPreference = "Stop"
 $gw = Join-Path (Split-Path -Parent $PSScriptRoot) "gateway"
 Push-Location $gw

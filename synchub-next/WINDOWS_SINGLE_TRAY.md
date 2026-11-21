@@ -72,6 +72,10 @@ powershell -ExecutionPolicy Bypass -File .\scripts\windows_single_tray.ps1 -Roll
 
 删掉 `%LOCALAPPDATA%\Programs\SyncHub`、开始菜单和桌面快捷方式，以及 `HKCU\...\Run\SyncHub`。不要连带删除 `%APPDATA%\SyncClipboard` 或 `%APPDATA%\SyncHub\tray-handoff`，除非你明确要丢掉回滚材料。
 
+## 图标
+
+文本源码里没有 `app/windows/runner/resources/app_icon.ico`（二进制文件未随快照导出）。当前构建不引用这个文件，窗口和托盘使用 Windows 自带的应用程序图标。若要沿用原来的图标，把该文件放回这个路径，并取消 `app/windows/runner/Runner.rc` 里对应一行的注释。
+
 ## Linux 上验证不了的部分
 
 剪贴板监听、`CF_HDROP` 粘贴、托盘、计划任务、凭据管理器和 `Ctrl+Shift+V` 都要在 Windows 上构建后看。协议、暂停逻辑、zip 路径校验和文件暂存有本机测试。

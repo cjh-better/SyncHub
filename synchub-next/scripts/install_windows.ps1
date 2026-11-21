@@ -1,4 +1,4 @@
-# SyncHub Windows One-Click User-Space Installer
+﻿# SyncHub Windows One-Click User-Space Installer
 # Installs SyncHub to %LOCALAPPDATA%\Programs\SyncHub (no admin required unless
 # disabling the legacy \SyncHubAutoReceiver scheduled task).
 param(
@@ -388,14 +388,15 @@ if (-not $NoLaunch) {
 
 Write-Host ""
 $handoff = Join-Path $PSScriptRoot "windows_single_tray.ps1"
-if (Test-Path -LiteralPath $handoff) {
-    Write-Step (U "\u6B63\u5728\u5907\u4EFD SyncClipboard \u5F00\u673A\u542F\u52A8\u9879\uFF08\u4E0D\u7981\u7528\u3001\u4E0D\u5220\u9664\uFF09...")
-    try {
-        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $handoff -BackupOnly
-    } catch {
-        Write-Warn ((U "\u5907\u4EFD\u542F\u52A8\u9879\u5931\u8D25\uFF0C\u5B89\u88C5\u672C\u8EAB\u5DF2\u5B8C\u6210: ") + $_.Exception.Message)
-    }
-    Write-Warn (U "\u5B89\u88C5\u53EA\u5907\u4EFD\u5F00\u673A\u9879\u3002\u8BF7\u5728 SyncHub \u8BBE\u7F6E\u91CC\u70B9\u300C\u4E34\u65F6\u6682\u505C\u5E76\u9A8C\u8BC1\u300D\uFF0C\u6216\u8FD0\u884C windows_single_tray.ps1 -Trial\u3002\u9A8C\u8BC1\u901A\u8FC7\u518D\u7981\u7528\u65E7\u5F00\u673A\u9879\uFF1B\u5931\u8D25\u7528 -AbortTrial\u3002")
+if (-not (Test-Path -LiteralPath $handoff)) {
+    throw "windows_single_tray.ps1 must be next to install_windows.ps1"
 }
+Write-Step (U "\u6B63\u5728\u5907\u4EFD SyncClipboard \u5F00\u673A\u542F\u52A8\u9879\uFF08\u4E0D\u7981\u7528\u3001\u4E0D\u5220\u9664\uFF09...")
+try {
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $handoff -BackupOnly
+} catch {
+    Write-Warn ((U "\u5907\u4EFD\u542F\u52A8\u9879\u5931\u8D25\uFF0C\u5B89\u88C5\u672C\u8EAB\u5DF2\u5B8C\u6210: ") + $_.Exception.Message)
+}
+Write-Warn (U "\u5B89\u88C5\u53EA\u5907\u4EFD\u5F00\u673A\u9879\u3002\u8BF7\u5728 SyncHub \u8BBE\u7F6E\u91CC\u70B9\u300C\u4E34\u65F6\u6682\u505C\u5E76\u9A8C\u8BC1\u300D\uFF0C\u6216\u8FD0\u884C windows_single_tray.ps1 -Trial\u3002\u9A8C\u8BC1\u901A\u8FC7\u518D\u7981\u7528\u65E7\u5F00\u673A\u9879\uFF1B\u5931\u8D25\u7528 -AbortTrial\u3002")
 Write-Host ""
 Write-Host ("  " + (U "\u5B89\u88C5\u5B8C\u6210\uFF01")) -ForegroundColor Green
