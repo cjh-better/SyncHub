@@ -90,7 +90,8 @@ class _SettingsPageState extends State<SettingsPage> {
         title: const Text('临时暂停 SyncClipboard'),
         content: const Text(
           '只退出 SyncClipboard 进程，不改开机启动，也不删除程序、配置或历史。\n\n'
-          '退出成功之后，SyncHub 才开始同步剪贴板。请试文字、截图和单个文件。不正常就点「立即恢复」。',
+          '会先走官方退出通道。如果进程还在，请在等待期间右键通知区域的 SyncClipboard 图标，点「退出」。不要只关窗口，也不要退出 SyncHub。\n\n'
+          '进程确认退出之后，SyncHub 才开始同步剪贴板。请试文字、截图和单个文件。不正常就点「立即恢复」。',
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),

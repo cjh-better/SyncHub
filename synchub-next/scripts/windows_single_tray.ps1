@@ -8,6 +8,7 @@ param(
     [switch]$Takeover,
     [switch]$Confirm,
     [switch]$Rollback,
+    [switch]$StopOfficial,
     [string]$BackupDir = ""
 )
 
@@ -70,6 +71,56 @@ function Backup-OfficialStartup {
     return $dir
 }
 
+function Get-SyncClipboardPipeName {
+    # SyncClipboard 3.3.3 AppInstance.cs: Global\SyncClipboard-Pipe-{UserName}-
+    return "Global\SyncClipboard-Pipe-$([Environment]::UserName)-"
+}
+
+function Send-SyncClipboardShutdown {
+    # Same line the official client sends to the running instance.
+    # ExitAsync stops services and calls Application.Exit. It does not hide the window.
+    # Do not relaunch the official client. Its restart flag also leaves a new process running.
+    $pipeName = Get-SyncClipboardPipeName
+    $client = New-Object System.IO.Pipes.NamedPipeClientStream '.', $pipeName, ([System.IO.Pipes.PipeDirection]::InOut)
+    try {
+        $client.Connect(3000)
+        $writer = New-Object System.IO.StreamWriter($client)
+        try {
+            $writer.WriteLine('Shutdown')
+            $writer.Flush()
+        } finally {
+            $writer.Dispose()
+        }
+        return $true
+    } catch {
+        Write-Warn "没能连上 SyncClipboard 退出管道 $pipeName : $($_.Exception.Message)"
+        return $false
+    } finally {
+        $client.Dispose()
+    }
+}
+
+function Wait-OfficialStopped([int]$Seconds) {
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    do {
+        if (-not (Test-OfficialRunning)) { return $true }
+        Start-Sleep -Milliseconds 500
+    } while ((Get-Date) -lt $deadline)
+    return -not (Test-OfficialRunning)
+}
+
+function Request-OfficialExit {
+    if (-not (Test-OfficialRunning)) { return $true }
+    Write-Step "向正在运行的 SyncClipboard 发送官方 Shutdown（命名管道，不强制结束进程）。"
+    $sent = Send-SyncClipboardShutdown
+    if ($sent -and (Wait-OfficialStopped -Seconds 45)) { return $true }
+    Write-Warn "SyncClipboard 进程还在。请在通知区域右键 SyncClipboard 图标，点击「退出」。"
+    Write-Warn "要点托盘菜单里的退出，它会结束进程。只关闭设置窗口不会退出。"
+    Write-Step "脚本再等 3 分钟。进程消失后，这一次试用会继续。不要退出 SyncHub，不要强制结束进程。"
+    if (Wait-OfficialStopped -Seconds 180) { return $true }
+    return $false
+}
+
 function Disable-OfficialStartup([string]$Dir, [switch]$StopProcess) {
     $marker = Join-Path $Dir "BACKUP_OK"
     if (-not (Test-Path -LiteralPath $marker)) {
@@ -85,8 +136,10 @@ function Disable-OfficialStartup([string]$Dir, [switch]$StopProcess) {
     }
     & reg.exe delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v $OfficialValue /f | Out-Null
     if ($StopProcess) {
-        & taskkill.exe /IM $OfficialImage | Out-Null
-        Write-Ok "已请求退出 $OfficialImage（未删除程序）"
+        if (-not (Request-OfficialExit)) {
+            throw "SyncClipboard 仍在运行，不能把它当成已退出。未使用强制结束。"
+        }
+        Write-Ok "SyncClipboard 已退出（未删除程序）"
     }
     Write-Ok "未删除程序、配置、历史或已接收文件。"
 }
@@ -157,7 +210,7 @@ function Request-AppPause {
     return $false
 }
 
-if (-not $BackupOnly -and -not $Trial -and -not $AbortTrial -and -not $Takeover -and -not $Rollback) {
+if (-not $BackupOnly -and -not $Trial -and -not $AbortTrial -and -not $Takeover -and -not $Rollback -and -not $StopOfficial) {
     $BackupOnly = $true
 }
 
@@ -195,15 +248,20 @@ if ($Takeover) {
     return
 }
 
+if ($StopOfficial) {
+    if ($Trial -or $AbortTrial -or $Takeover -or $Rollback) {
+        throw "-StopOfficial 不能和其他操作一起用。"
+    }
+    if (Request-OfficialExit) { exit 0 }
+    Write-Warn "SyncClipboard 仍在运行。开机项未改。请从托盘点「退出」后重试。"
+    exit 3
+}
+
 $saved = Backup-OfficialStartup
 if ($Trial) {
     $exe = Save-OfficialExe $saved
-    if (Test-OfficialRunning) {
-        & taskkill.exe /IM $OfficialImage | Out-Null
-        Start-Sleep -Milliseconds 800
-    }
-    if (Test-OfficialRunning) {
-        throw "没能退出 SyncClipboard。开机项未改，SyncHub 不应开始同步剪贴板。"
+    if (-not (Request-OfficialExit)) {
+        throw "SyncClipboard 仍在运行。开机项未改，SyncHub 继续暂停剪贴板。请右键托盘图标点「退出」后重新运行 -Trial。"
     }
     @{ op = "trial"; paused = $false; exe = $exe } | ConvertTo-Json |
         Set-Content -LiteralPath (Join-Path (Get-HandoffRoot) "command.json") -Encoding UTF8

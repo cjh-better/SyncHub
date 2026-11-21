@@ -36,7 +36,11 @@ SyncClipboard 还在运行时，SyncHub 不写剪贴板，所以这时看不了 
 powershell -ExecutionPolicy Bypass -File .\scripts\windows_single_tray.ps1 -Trial
 ```
 
-这一步只备份启动项、记下 `SyncClipboard.exe` 的路径，然后退出该进程。开机项保持原样。进程确认退出后，SyncHub 才开始同步剪贴板。两边不会同时写。
+这一步只备份启动项、记下 `SyncClipboard.exe` 的路径，然后请官方进程退出。开机项保持原样。进程确认退出后，SyncHub 才开始同步剪贴板。两边不会同时写。
+
+退出用的是 SyncClipboard 3.3.3 自己的命名管道 `Global\SyncClipboard-Pipe-<用户名>-`，写入一行 `Shutdown`。上游 `AppInstance` 收到后调用 `ExitAsync`：先停内部服务，再 `Application.Exit`，进程结束。这和托盘菜单「退出」是同一条路，不是把窗口藏起来。不要用会再启动一个新进程的重启参数，也不要 `taskkill /F`。
+
+脚本先等最多 45 秒。若进程还在，窗口会写出托盘步骤，并再等 3 分钟：右键通知区域的 SyncClipboard 图标，点「退出」。在这段等待里点退出后，同一次 `-Trial` 会继续，不必先失败再重跑。若 3 分钟后进程仍在，命令失败退出，开机项不变，SyncHub 继续暂停剪贴板。进程已经退出后再运行 `-Trial` 会直接进入验证。
 
 2. 试文字、截图和单个文件。文件收发本来就不依赖 SyncClipboard。
 

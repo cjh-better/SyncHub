@@ -5,6 +5,7 @@ import 'dart:typed_data';
 
 import 'package:path/path.dart' as p;
 
+import 'official_exit.dart';
 import 'tray_ownership.dart';
 
 /// Windows Explorer context-menu registration, legacy SyncHub state/account
@@ -552,11 +553,13 @@ Get-CimInstance Win32_Process -Filter "Name = 'python.exe' OR Name = 'pythonw.ex
     ]);
     var stopped = !stopProcess;
     if (stopProcess) {
-      final kill = await Process.run('taskkill.exe', ['/IM', TrayTakeoverPlan.officialImage]);
-      stopped = kill.exitCode == 0 || '${kill.stdout}${kill.stderr}'.toLowerCase().contains('not found');
+      final code = await _stopOfficialViaHelper();
+      stopped = code == 0 && !await _imageRunning(TrayTakeoverPlan.officialImage);
     }
     if (!taskOk) return '已备份到 $backupDir，但禁用计划任务未成功';
-    if (!stopped) return '已禁用开机启动。退出 SyncClipboard 进程未成功，托盘可能仍在，直到手动退出';
+    if (!stopped) {
+      return '已禁用开机启动。${OfficialExitPolicy.traySteps}未使用强制结束。';
+    }
     return stopProcess ? '已禁用 SyncClipboard 开机启动并退出其进程。程序、配置和历史都还在。' : '已禁用 SyncClipboard 开机启动。程序、配置和历史都还在。';
   }
 
@@ -651,6 +654,30 @@ Get-CimInstance Win32_Process -Filter "Name = 'python.exe' OR Name = 'pythonw.ex
     });
   }
 
+  /// Helper installed next to synchub.exe. It sends the official Shutdown pipe
+  /// message and, if needed, waits while the tray menu Exit is used.
+  static String? installedSingleTrayScript() {
+    final beside = p.join(p.dirname(Platform.resolvedExecutable), 'windows_single_tray.ps1');
+    if (File(beside).existsSync()) return beside;
+    return null;
+  }
+
+  /// 0 when SyncClipboard.exe is gone. 2 when the helper script is missing.
+  /// 3 when the process is still running. Never uses taskkill.
+  static Future<int> _stopOfficialViaHelper() async {
+    final script = installedSingleTrayScript();
+    if (script == null) return 2;
+    final res = await Process.run('powershell.exe', [
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      script,
+      '-StopOfficial',
+    ]);
+    return res.exitCode;
+  }
+
   /// Backup, remember the official executable, then stop only that process.
   /// Startup entries stay as they are. SyncHub must not watch until this
   /// reports [TrialPauseResult.stopped].
@@ -672,22 +699,22 @@ Get-CimInstance Win32_Process -Filter "Name = 'python.exe' OR Name = 'pythonw.ex
     }
     final running = await _imageRunning(TrayTakeoverPlan.officialImage);
     if (running) {
-      await Process.run('taskkill.exe', ['/IM', TrayTakeoverPlan.officialImage]);
-    }
-    var stopped = false;
-    for (var i = 0; i < 20; i++) {
-      if (!await _imageRunning(TrayTakeoverPlan.officialImage)) {
-        stopped = true;
-        break;
+      final code = await _stopOfficialViaHelper();
+      if (code != 0) {
+        return TrialPauseResult(
+          stopped: false,
+          backupDir: backup,
+          exePath: exe,
+          message: 'SyncClipboard 仍在运行。${OfficialExitPolicy.traySteps}开机项未改，SyncHub 不会开始监视剪贴板。',
+        );
       }
-      await Future<void>.delayed(const Duration(milliseconds: 200));
     }
-    if (!stopped) {
+    if (await _imageRunning(TrayTakeoverPlan.officialImage)) {
       return TrialPauseResult(
         stopped: false,
         backupDir: backup,
         exePath: exe,
-        message: 'SyncClipboard 仍在运行，SyncHub 不会开始监视剪贴板',
+        message: 'SyncClipboard 仍在运行。${OfficialExitPolicy.traySteps}开机项未改，SyncHub 不会开始监视剪贴板。',
       );
     }
     await _writeCommand(<String, Object>{'op': 'trial', 'paused': false, 'exe': exe ?? ''});

@@ -5,7 +5,7 @@
 Windows 只保留 SyncHub 托盘。
 
 - 已安装的 `synchub.exe` 是 **1.1.0+6**。本机未发布源码的 `pubspec.yaml` 已是 **1.1.1+7**（2026-11-14 至 11-15 的剪贴板、Windows 原生、传输、P2P 和测试改动）。那些改动都保留在 `synchub-next/`，没有用仓库里更早的 Python 接收器覆盖。
-- 1.1.2+8 先临时退出 SyncClipboard（不改开机项），确认进程退出后 SyncHub 才监视剪贴板。验证失败会先停 SyncHub 的剪贴板，再打开原来的程序。验证通过后才禁用 `\SyncClipboardStartup`。
+- 1.1.2+8 先临时退出 SyncClipboard（不改开机项），确认进程退出后 SyncHub 才监视剪贴板。退出走官方命名管道 `Shutdown`（与托盘「退出」相同，会结束进程）。管道未能退出时，脚本会说明托盘步骤并继续等待，等待期间手动退出后同一次试用继续。不用 `taskkill /F`。验证失败会先停 SyncHub 的剪贴板，再打开原来的程序。验证通过后才禁用 `\SyncClipboardStartup`。
 - 图片文件名改为毫秒时间加进程内递增序号。Mac 和 Android 原先只有到秒的名字，同一秒会撞名；随机 4 位后缀也会撞。序号不截断。
 - Windows 资源脚本不再引用缺失的 `app_icon.ico`。窗口和托盘使用系统通用应用程序图标。原来的图标文件不在文本快照里，路径是 `app/windows/runner/resources/app_icon.ico`。
 - 分发的 PowerShell 脚本改为 UTF-8 BOM，供 Windows PowerShell 5.1 的 `powershell.exe -File` 解析。发行目录包含 `windows_single_tray.ps1`。

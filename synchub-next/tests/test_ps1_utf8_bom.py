@@ -32,6 +32,18 @@ class Ps1EncodingTest(unittest.TestCase):
         self.assertIn("windows_single_tray.ps1 must be next to install_windows.ps1", installer)
         self.assertIn("strip_windows_jni.ps1", text)
 
+    def test_trial_uses_official_shutdown_pipe(self):
+        text = (ROOT / "scripts" / "windows_single_tray.ps1").read_text(encoding="utf-8-sig")
+        self.assertIn(r"Global\SyncClipboard-Pipe-", text)
+        self.assertIn("WriteLine('Shutdown')", text)
+        self.assertIn("退出", text)
+        self.assertIn("-Seconds 45", text)
+        self.assertIn("-Seconds 180", text)
+        self.assertNotIn("taskkill", text.lower())
+        self.assertNotIn("--shutdown-previous", text)
+        self.assertNotIn("Start-Sleep -Milliseconds 800", text)
+        self.assertLess(text.index("function Request-OfficialExit"), text.index('op = "trial"'))
+
 
 if __name__ == "__main__":
     unittest.main()
