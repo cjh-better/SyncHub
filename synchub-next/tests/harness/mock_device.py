@@ -233,14 +233,11 @@ class MockSyncDevice:
 
     @staticmethod
     def generate_image_filename(timestamp: Optional[float] = None) -> str:
+        """Match client names: millisecond stamp plus a counter that does not wrap."""
         t = timestamp if timestamp is not None else time.time()
         dt_struct = time.localtime(t)
         millis = int(round((t % 1) * 1000)) % 1000
-        # 4-digit nonce. A counter avoids same-millisecond collisions in tests
-        # without changing the IMG_YYYYMMDD_HHMMSS_mmm_nnnn.png shape.
         MockSyncDevice._image_nonce += 1
-        if MockSyncDevice._image_nonce > 9999:
-            MockSyncDevice._image_nonce = 1000
         nonce = f"{MockSyncDevice._image_nonce:04d}"
         date_str = time.strftime("%Y%m%d_%H%M%S", dt_struct)
         return f"IMG_{date_str}_{millis:03d}_{nonce}.png"

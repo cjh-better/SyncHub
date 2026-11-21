@@ -618,4 +618,141 @@ Get-CimInstance Win32_Process -Filter "Name = 'python.exe' OR Name = 'pythonw.ex
       return '';
     }
   }
+
+  static File? _commandFile() {
+    final root = handoffRoot();
+    if (root == null) return null;
+    return File(p.join(root, 'command.json'));
+  }
+
+  static Future<HandoffCommand?> readHandoffCommand() async {
+    final file = _commandFile();
+    if (file == null || !await file.exists()) return null;
+    try {
+      return HandoffCommand.parse(await file.readAsString());
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<void> _writeCommand(Map<String, Object> body) async {
+    final file = _commandFile();
+    if (file == null) return;
+    await file.parent.create(recursive: true);
+    await file.writeAsString(jsonEncode(body));
+  }
+
+  static Future<void> markAbortPaused() async {
+    final current = await readHandoffCommand();
+    await _writeCommand(<String, Object>{
+      'op': 'abort',
+      'paused': true,
+      'exe': current?.exe ?? '',
+    });
+  }
+
+  /// Backup, remember the official executable, then stop only that process.
+  /// Startup entries stay as they are. SyncHub must not watch until this
+  /// reports [TrialPauseResult.stopped].
+  static Future<TrialPauseResult> beginClipboardTrial() async {
+    if (!Platform.isWindows) {
+      return const TrialPauseResult(stopped: false, message: '当前不是 Windows');
+    }
+    final plan = HandoffPlan.beginTrial(officialRunning: true);
+    if (plan.actions.contains(HandoffAction.disableOfficialStartup)) {
+      return const TrialPauseResult(stopped: false, message: '临时验证不能改开机项');
+    }
+    final backup = await backupOfficialStartup();
+    if (backup == null) {
+      return const TrialPauseResult(stopped: false, message: '备份失败，未退出 SyncClipboard');
+    }
+    final exe = await locateOfficialExecutable();
+    if (exe != null && exe.isNotEmpty) {
+      await File(p.join(backup, 'official-exe.txt')).writeAsString(exe);
+    }
+    final running = await _imageRunning(TrayTakeoverPlan.officialImage);
+    if (running) {
+      await Process.run('taskkill.exe', ['/IM', TrayTakeoverPlan.officialImage]);
+    }
+    var stopped = false;
+    for (var i = 0; i < 20; i++) {
+      if (!await _imageRunning(TrayTakeoverPlan.officialImage)) {
+        stopped = true;
+        break;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+    }
+    if (!stopped) {
+      return TrialPauseResult(
+        stopped: false,
+        backupDir: backup,
+        exePath: exe,
+        message: 'SyncClipboard 仍在运行，SyncHub 不会开始监视剪贴板',
+      );
+    }
+    await _writeCommand(<String, Object>{'op': 'trial', 'paused': false, 'exe': exe ?? ''});
+    return TrialPauseResult(
+      stopped: true,
+      backupDir: backup,
+      exePath: exe,
+      message: '已临时退出 SyncClipboard。开机项没改。现在可以验证 SyncHub 的剪贴板。',
+    );
+  }
+
+  /// Start the official executable recorded in [backupDir]. Does not delete files
+  /// and does not change startup. Caller must pause SyncHub first.
+  static Future<bool> resumeOfficialProcess(String backupDir) async {
+    if (!Platform.isWindows) return false;
+    var exe = '';
+    final saved = File(p.join(backupDir, 'official-exe.txt'));
+    if (await saved.exists()) exe = (await saved.readAsString()).trim();
+    if (exe.isEmpty || !File(exe).existsSync()) {
+      exe = await locateOfficialExecutable() ?? '';
+    }
+    if (exe.isEmpty || !File(exe).existsSync()) return false;
+    try {
+      await Process.start(exe, const <String>[], mode: ProcessStartMode.detached);
+    } catch (_) {
+      return false;
+    }
+    for (var i = 0; i < 20; i++) {
+      if (await _imageRunning(TrayTakeoverPlan.officialImage)) return true;
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+    }
+    return false;
+  }
+
+  static Future<String?> locateOfficialExecutable() async {
+    if (!Platform.isWindows) return null;
+    final task = await _queryTask(TrayTakeoverPlan.officialTask);
+    final fromXml = commandFromTaskXml(task.xml);
+    if (fromXml != null && File(fromXml).existsSync()) return fromXml;
+    try {
+      const script =
+          "(Get-CimInstance Win32_Process -Filter \"Name = 'SyncClipboard.exe'\" | Select-Object -First 1 -ExpandProperty ExecutablePath)";
+      final res = await Process.run('powershell.exe', ['-NoProfile', '-Command', script]);
+      final path = res.stdout.toString().trim();
+      if (path.isNotEmpty && File(path).existsSync()) return path;
+    } catch (_) {}
+    final local = Platform.environment['LOCALAPPDATA'];
+    if (local != null && local.isNotEmpty) {
+      final guess = p.join(local, 'Programs', 'SyncClipboard', 'SyncClipboard.exe');
+      if (File(guess).existsSync()) return guess;
+    }
+    return fromXml;
+  }
+}
+
+class TrialPauseResult {
+  final bool stopped;
+  final String? backupDir;
+  final String? exePath;
+  final String message;
+
+  const TrialPauseResult({
+    required this.stopped,
+    required this.message,
+    this.backupDir,
+    this.exePath,
+  });
 }

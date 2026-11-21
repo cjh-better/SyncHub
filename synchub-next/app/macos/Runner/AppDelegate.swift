@@ -415,6 +415,19 @@ private enum SyncHubQuickActionInstaller {
 // MARK: - Clipboard Rules & Helpers
 
 private enum SyncHubClipboard {
+  private static var imageSeq: UInt64 = 0
+
+  /// Milliseconds plus a counter, so two copies in the same second do not share a name.
+  static func newImageFileName(date: Date = Date()) -> String {
+    imageSeq += 1
+    let fmt = DateFormatter()
+    fmt.locale = Locale(identifier: "en_US_POSIX")
+    fmt.dateFormat = "yyyyMMdd_HHmmss_SSS"
+    let digits = String(imageSeq)
+    let padded = String(repeating: "0", count: max(0, 4 - digits.count)) + digits
+    return "IMG_\(fmt.string(from: date))_\(padded).png"
+  }
+
   static let concealedTypes: Set<String> = [
     "org.nspasteboard.ConcealedType",
     "org.nspasteboard.TransientType",
@@ -1286,10 +1299,7 @@ class AppDelegate: FlutterAppDelegate, NSMenuDelegate, NSWindowDelegate, NSDragg
         return
       }
       if let png = SyncHubClipboard.readImagePNG(allowFileIcon: false) {
-        let fmt = DateFormatter()
-        fmt.locale = Locale(identifier: "en_US_POSIX")
-        fmt.dateFormat = "yyyyMMdd_HHmmss"
-        let fileName = "IMG_\(fmt.string(from: Date())).png"
+        let fileName = SyncHubClipboard.newImageFileName()
         result([
           "type": "image",
           "bytes": FlutterStandardTypedData(bytes: png),

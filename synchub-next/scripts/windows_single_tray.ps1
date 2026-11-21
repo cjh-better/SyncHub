@@ -3,6 +3,8 @@
 # This script never deletes SyncClipboard.exe, SyncClipboard.json, history, or received files.
 param(
     [switch]$BackupOnly,
+    [switch]$Trial,
+    [switch]$AbortTrial,
     [switch]$Takeover,
     [switch]$Confirm,
     [switch]$Rollback,
@@ -103,7 +105,61 @@ function Restore-OfficialStartup([string]$Dir) {
     Write-Ok "未删除任何文件。手动打开 SyncClipboard 后，SyncHub 会暂停自己的剪贴板监视。"
 }
 
-if (-not $BackupOnly -and -not $Takeover -and -not $Rollback) { $BackupOnly = $true }
+function Get-OfficialExeFromBackup([string]$Dir) {
+    $saved = Join-Path $Dir "official-exe.txt"
+    if (Test-Path -LiteralPath $saved) {
+        $exe = (Get-Content -LiteralPath $saved -Raw).Trim()
+        if (-not [string]::IsNullOrWhiteSpace($exe)) { return $exe }
+    }
+    $fallback = Join-Path $env:LOCALAPPDATA "Programs\SyncClipboard\SyncClipboard.exe"
+    if (Test-Path -LiteralPath $fallback) { return $fallback }
+    return ""
+}
+
+function Save-OfficialExe([string]$Dir) {
+    $exe = ""
+    $proc = Get-CimInstance Win32_Process -Filter "Name = 'SyncClipboard.exe'" -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($null -ne $proc -and -not [string]::IsNullOrWhiteSpace($proc.ExecutablePath)) {
+        $exe = $proc.ExecutablePath
+    }
+    if ([string]::IsNullOrWhiteSpace($exe)) {
+        $fallback = Join-Path $env:LOCALAPPDATA "Programs\SyncClipboard\SyncClipboard.exe"
+        if (Test-Path -LiteralPath $fallback) { $exe = $fallback }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($exe)) {
+        Set-Content -LiteralPath (Join-Path $Dir "official-exe.txt") -Value $exe -Encoding UTF8
+    }
+    return $exe
+}
+
+function Test-OfficialRunning {
+    $out = & tasklist.exe /FI "IMAGENAME eq SyncClipboard.exe" /NH
+    return (($out | Out-String).ToLower().Contains("syncclipboard.exe"))
+}
+
+function Request-AppPause {
+    $root = Get-HandoffRoot
+    $cmd = Join-Path $root "command.json"
+    $exe = ""
+    if (-not [string]::IsNullOrWhiteSpace($BackupDir)) { $exe = Get-OfficialExeFromBackup $BackupDir }
+    @{ op = "abort"; paused = $false; exe = $exe } | ConvertTo-Json | Set-Content -LiteralPath $cmd -Encoding UTF8
+    $deadline = (Get-Date).AddSeconds(15)
+    $synchub = @(Get-Process -Name "synchub" -ErrorAction SilentlyContinue)
+    if ($synchub.Count -eq 0) { return $true }
+    while ((Get-Date) -lt $deadline) {
+        if (Test-Path -LiteralPath $cmd) {
+            $raw = Get-Content -LiteralPath $cmd -Raw
+            if ($raw -match '"paused"\s*:\s*true') { return $true }
+        }
+        Start-Sleep -Milliseconds 400
+    }
+    return $false
+}
+
+if (-not $BackupOnly -and -not $Trial -and -not $AbortTrial -and -not $Takeover -and -not $Rollback) {
+    $BackupOnly = $true
+}
 
 if ($Rollback) {
     if ([string]::IsNullOrWhiteSpace($BackupDir)) { throw "回滚需要 -BackupDir <备份目录>" }
@@ -111,14 +167,50 @@ if ($Rollback) {
     return
 }
 
-$saved = Backup-OfficialStartup
-if ($BackupOnly -and -not $Takeover) {
-    Write-Step "只做了备份。确认新版本剪贴板正常后，再执行 -Takeover -Confirm。"
+if ($AbortTrial) {
+    if ([string]::IsNullOrWhiteSpace($BackupDir)) { throw "恢复需要 -BackupDir <试用备份目录>" }
+    $paused = Request-AppPause
+    if (-not $paused) {
+        throw "SyncHub 仍在运行，且没有确认已暂停剪贴板。已拒绝启动 SyncClipboard，避免两边同时写。"
+    }
+    $exe = Get-OfficialExeFromBackup $BackupDir
+    if ([string]::IsNullOrWhiteSpace($exe) -or -not (Test-Path -LiteralPath $exe)) {
+        throw "找不到 SyncClipboard.exe。开机项未改，程序和配置都还在。请从开始菜单手动打开它。"
+    }
+    Start-Process -FilePath $exe | Out-Null
+    @{ op = "idle"; paused = $false; exe = $exe } | ConvertTo-Json |
+        Set-Content -LiteralPath (Join-Path (Get-HandoffRoot) "command.json") -Encoding UTF8
+    Write-Ok "已在 SyncHub 暂停剪贴板之后重新打开 SyncClipboard。开机项未改。"
     return
 }
 
 if ($Takeover) {
-    if (-not $Confirm) { throw "接管必须同时带 -Confirm。这一步会禁用旧自启并退出 SyncClipboard，但仍不删除程序和数据。" }
-    Disable-OfficialStartup -Dir $saved -StopProcess
-    Write-Step "备份目录（回滚用）: $saved"
+    if (-not $Confirm) { throw "禁用旧开机启动必须同时带 -Confirm，并且要在临时暂停并验证成功之后。" }
+    if ([string]::IsNullOrWhiteSpace($BackupDir)) { throw "需要 -BackupDir，指向临时暂停时生成的备份。" }
+    if (Test-OfficialRunning) {
+        throw "SyncClipboard 仍在运行。请先 -Trial，验证 SyncHub 剪贴板，不要在两边都开着时禁用开机项。"
+    }
+    Disable-OfficialStartup -Dir $BackupDir
+    Write-Step "旧开机启动已禁用。程序、配置和历史都还在。备份: $BackupDir"
+    return
 }
+
+$saved = Backup-OfficialStartup
+if ($Trial) {
+    $exe = Save-OfficialExe $saved
+    if (Test-OfficialRunning) {
+        & taskkill.exe /IM $OfficialImage | Out-Null
+        Start-Sleep -Milliseconds 800
+    }
+    if (Test-OfficialRunning) {
+        throw "没能退出 SyncClipboard。开机项未改，SyncHub 不应开始同步剪贴板。"
+    }
+    @{ op = "trial"; paused = $false; exe = $exe } | ConvertTo-Json |
+        Set-Content -LiteralPath (Join-Path (Get-HandoffRoot) "command.json") -Encoding UTF8
+    Write-Ok "已临时退出 SyncClipboard。开机项未改。请验证文字、截图和单个文件。"
+    Write-Step "通过: -Takeover -Confirm -BackupDir `"$saved`""
+    Write-Step "失败: -AbortTrial -BackupDir `"$saved`""
+    return
+}
+
+Write-Step "只做了备份。验证剪贴板请用 -Trial，不要直接 -Takeover。备份: $saved"

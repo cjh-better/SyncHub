@@ -1537,20 +1537,24 @@ class PlatformClipboardAdapter implements ClipboardAdapter {
     }
   }
 
-  static int _imgSeq = Random().nextInt(0x10000);
+  static int _imgSeq = 0;
 
-  static String defaultImageFileName({DateTime? now, Random? random}) {
+  /// `IMG_yyyyMMdd_HHmmss_SSS_<seq>.png`.
+  ///
+  /// [seq] is a process-wide counter and is not truncated. Two calls in the
+  /// same millisecond still get different names. A random 16-bit suffix can
+  /// collide, so production does not use one.
+  static String defaultImageFileName({DateTime? now, int? seq}) {
     final dt = now ?? DateTime.now();
-    final seq = random != null ? random.nextInt(0x10000) : ((_imgSeq++) & 0xFFFF);
-    String two(int n) => n.toString().padLeft(2, '0');
+    final n = seq ?? ++_imgSeq;
+    String two(int v) => v.toString().padLeft(2, '0');
     final mmm = dt.millisecond.toString().padLeft(3, '0');
-    final xxxx = seq.toRadixString(16).padLeft(4, '0');
+    final suffix = n.toString().padLeft(4, '0');
     return 'IMG_${dt.year}${two(dt.month)}${two(dt.day)}_'
-        '${two(dt.hour)}${two(dt.minute)}${two(dt.second)}_${mmm}_$xxxx.png';
+        '${two(dt.hour)}${two(dt.minute)}${two(dt.second)}_${mmm}_$suffix.png';
   }
 
-  static String _defaultImageFileName({DateTime? now, Random? random}) =>
-      defaultImageFileName(now: now, random: random);
+  static String _defaultImageFileName({DateTime? now}) => defaultImageFileName(now: now);
 }
 
 // ---------------------------------------------------------------------------

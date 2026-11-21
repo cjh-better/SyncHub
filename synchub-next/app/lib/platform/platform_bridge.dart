@@ -54,6 +54,7 @@ class PlatformBridge {
   Timer? _traySyncDebounce;
   Timer? _officialProbeTimer;
   OfficialClipboardPresence officialClipboard = const OfficialClipboardPresence.absent();
+  bool holdClipboard = false;
   String _lastWinExplorerSig = '';
   String _lastAndroidServiceSig = '';
   StreamSubscription<Map<String, dynamic>>? _androidEventsSub;
@@ -184,7 +185,7 @@ class PlatformBridge {
         unawaited(_syncWindowsExplorerMenuIfNeeded());
         unawaited(refreshClipboardDuty());
         _officialProbeTimer?.cancel();
-        _officialProbeTimer = Timer.periodic(const Duration(seconds: 20), (_) {
+        _officialProbeTimer = Timer.periodic(const Duration(seconds: 2), (_) {
           unawaited(refreshClipboardDuty());
         });
       }
@@ -360,13 +361,30 @@ class PlatformBridge {
     return null;
   }
 
+  Future<void> holdSyncHubClipboard() async {
+    holdClipboard = true;
+    await engine.clipSync.setYieldToOfficialClient(true);
+  }
+
   Future<void> refreshClipboardDuty() async {
     if (!Platform.isWindows) return;
     try {
+      final cmd = await WinIntegration.readHandoffCommand();
+      if (cmd != null && cmd.requestsAbort && !cmd.paused) {
+        holdClipboard = true;
+        await engine.clipSync.setYieldToOfficialClient(true);
+        await WinIntegration.markAbortPaused();
+        officialClipboard = await WinIntegration.inspectOfficialClipboard();
+        return;
+      }
       officialClipboard = await WinIntegration.inspectOfficialClipboard();
-      await engine.clipSync.setYieldToOfficialClient(
-        decideClipboardDuty(officialClipboard) == ClipboardDuty.yieldToOfficial,
-      );
+      final pause = holdClipboard ||
+          officialClipboard.processRunning ||
+          (cmd?.requestsAbort ?? false);
+      await engine.clipSync.setYieldToOfficialClient(pause);
+      if (holdClipboard && officialClipboard.processRunning) {
+        holdClipboard = false;
+      }
     } catch (_) {}
   }
 

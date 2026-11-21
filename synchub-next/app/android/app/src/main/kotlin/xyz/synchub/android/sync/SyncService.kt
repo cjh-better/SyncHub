@@ -39,8 +39,6 @@ import xyz.synchub.android.util.Rom
 import xyz.synchub.android.util.Status
 import xyz.synchub.android.xposed.ModuleStatus
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -432,7 +430,7 @@ class SyncService : Service() {
                     if (bytes.isEmpty() || SyncHubEngineHost.shouldSuppressLocalImage(bytes)) return@execute
 
                     val ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(mime) ?: "png"
-                    val name = "IMG_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date()) + ".$ext"
+                    val name = SyncHubEngineHost.newClipboardImageName(ext)
                     val outDir = File(cacheDir, "clip_out").apply { mkdirs() }
                     outDir.listFiles()?.forEach { runCatching { it.delete() } }
                     val staged = File(outDir, name).apply { writeBytes(bytes) }

@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -591,32 +590,29 @@ void main() {
       expect(state.lastRemoteKey, profileHash);
     });
 
-    test('defaultImageFileName matches IMG_YYYYMMDD_HHMMSS_mmm_xxxx.png format and generates unique names', () {
-      final pattern = RegExp(r'^IMG_\d{8}_\d{6}_\d{3}_[0-9a-f]{4}\.png$');
+    test('defaultImageFileName matches IMG_YYYYMMDD_HHMMSS_mmm_seq.png and stays unique in one millisecond', () {
+      final pattern = RegExp(r'^IMG_\d{8}_\d{6}_\d{3}_\d{4,}\.png$');
       final name = PlatformClipboardAdapter.defaultImageFileName();
       expect(pattern.hasMatch(name), isTrue);
 
       final fixedDate = DateTime(2026, 11, 14, 22, 45, 30, 42);
       final deterministicName = PlatformClipboardAdapter.defaultImageFileName(
         now: fixedDate,
-        random: Random(12345),
+        seq: 7,
       );
-      expect(deterministicName.startsWith('IMG_20261114_224530_042_'), isTrue);
-      expect(pattern.hasMatch(deterministicName), isTrue);
+      expect(deterministicName, 'IMG_20261114_224530_042_0007.png');
 
-      // Fast loop generates unique names without collision:
       final generated = <String>{};
-      for (var i = 0; i < 100; i++) {
-        final fn = PlatformClipboardAdapter.defaultImageFileName();
-        expect(generated.add(fn), isTrue);
+      for (var i = 0; i < 10000; i++) {
+        generated.add(PlatformClipboardAdapter.defaultImageFileName(now: fixedDate));
       }
-      expect(generated.length, 100);
+      expect(generated, hasLength(10000));
     });
 
-    test('defaultImageFileName guarantees zero collisions across 10,000 concurrent generations', () async {
+    test('defaultImageFileName guarantees zero collisions across 10,000 generations', () async {
       const workerCount = 10;
       const iterationsPerWorker = 1000;
-      final pattern = RegExp(r'^IMG_\d{8}_\d{6}_\d{3}_[0-9a-f]{4}\.png$');
+      final pattern = RegExp(r'^IMG_\d{8}_\d{6}_\d{3}_\d{4,}\.png$');
 
       final futures = List.generate(workerCount, (workerId) async {
         final list = <String>[];

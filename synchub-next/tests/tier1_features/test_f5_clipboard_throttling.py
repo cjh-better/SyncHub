@@ -56,7 +56,7 @@ class TestF5ClipboardThrottling(unittest.TestCase):
         self.assertIsNone(result, "Must return None to signal fallback to inline summary")
 
     def test_f5_05_image_filename_millisecond_nonce(self):
-        """_defaultImageFileName generates unique filenames with millisecond timestamp and random nonce."""
+        """Image names use a millisecond stamp and a counter, so one timestamp stays unique."""
         t = 1700000000.123
         fn1 = MockSyncDevice.generate_image_filename(timestamp=t)
         fn2 = MockSyncDevice.generate_image_filename(timestamp=t)

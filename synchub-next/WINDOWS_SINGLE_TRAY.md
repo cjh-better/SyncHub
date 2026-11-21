@@ -26,33 +26,41 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install_windows.ps1
 
 Android 发布签名的 keystore 不在源码里。构建 release 前在 `app/android/keystore.properties`（已忽略）或 `SYNCHUB_KEYSTORE_FILE` / `SYNCHUB_KEYSTORE_PASSWORD` / `SYNCHUB_KEY_ALIAS` / `SYNCHUB_KEY_PASSWORD` 提供本机密钥。不要把密钥写进仓库。
 
-## 确认正常之后再接管
+## 先临时暂停，验证通过再禁用开机项
 
-先看文件是否还能收发，文字和截图是否还会同步到其他已经在用 SyncHub 的设备。然后任选一种：
+SyncClipboard 还在运行时，SyncHub 不写剪贴板，所以这时看不了 SyncHub 的同步。不要第一步就禁用开机项。
 
-1. 打开 SyncHub → 设置 →「确认接管」。
-2. 或者：
+1. 设置里点「临时暂停并验证」，或：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\windows_single_tray.ps1 -Takeover -Confirm
+powershell -ExecutionPolicy Bypass -File .\scripts\windows_single_tray.ps1 -Trial
 ```
 
-接管会：
+这一步只备份启动项、记下 `SyncClipboard.exe` 的路径，然后退出该进程。开机项保持原样。进程确认退出后，SyncHub 才开始同步剪贴板。两边不会同时写。
 
-1. 把计划任务 XML 和 `HKCU\...\Run` 备份到 `%APPDATA%\SyncHub\tray-handoff\<时间>\`。
-2. 若剪贴板服务器地址还是空的，从本机 `SyncClipboard.json` 读入地址、用户名和密码。密码只进 Windows 凭据管理器，不进日志，也不进 git。
-3. 禁用 `\SyncClipboardStartup`，删掉名为 `SyncClipboard` 的登录启动项。
-4. 退出 `SyncClipboard.exe`。
+2. 试文字、截图和单个文件。文件收发本来就不依赖 SyncClipboard。
 
-不会删除：
+3. 验证通过后，设置里点「验证通过，禁用旧开机启动」，或：
 
-- `SyncClipboard.exe` 和它的安装目录
-- `%APPDATA%\SyncClipboard\SyncClipboard.json`
-- 剪贴板历史、云端收藏、已经收到的文件
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\windows_single_tray.ps1 -Takeover -Confirm -BackupDir "$env:APPDATA\SyncHub\tray-handoff\<时间>"
+```
+
+这时才禁用 `\SyncClipboardStartup` 和名为 `SyncClipboard` 的登录项。若进程还在，命令会拒绝。
+
+4. 验证失败时先停 SyncHub 的剪贴板，再打开原来的程序。设置里点「立即恢复 SyncClipboard」，或：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\windows_single_tray.ps1 -AbortTrial -BackupDir "$env:APPDATA\SyncHub\tray-handoff\<时间>"
+```
+
+脚本会等 SyncHub 写下「已暂停」再启动旧程序。等不到就拒绝启动，避免两边一起写。这一步不改开机项，重启后仍按原来的计划任务打开 SyncClipboard。
+
+不会删除程序、`SyncClipboard.json`、历史或已接收文件。剪贴板密码只在本机读入 Windows 凭据管理器。
 
 ## 回滚
 
-设置里的「恢复旧自启」，或：
+已经禁用开机项之后，设置里的「恢复旧开机启动」，或：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\windows_single_tray.ps1 -Rollback -BackupDir "$env:APPDATA\SyncHub\tray-handoff\<时间>"

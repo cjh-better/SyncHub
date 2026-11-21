@@ -57,6 +57,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * 进程级共享 FlutterEngine 宿主：
@@ -65,6 +66,15 @@ import java.util.concurrent.CountDownLatch
  */
 object SyncHubEngineHost {
     const val ENGINE_ID = "synchub_shared_engine"
+    private val clipboardImageSeq = AtomicInteger(0)
+
+    /** Same-second screenshots stay distinct. The counter is not truncated. */
+    fun newClipboardImageName(ext: String, now: Date = Date()): String {
+        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(now)
+        val seq = clipboardImageSeq.incrementAndGet().toString().padStart(4, '0')
+        val clean = ext.trim().trimStart('.').ifEmpty { "png" }
+        return "IMG_${stamp}_$seq.$clean"
+    }
     private const val MAX_EVENT_BUFFER = 64
     private const val MAX_CLIP_IMAGE_BYTES = 20 * 1024 * 1024
 
@@ -878,7 +888,7 @@ object SyncHubEngineHost {
             }
         }
         val ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(mime) ?: "png"
-        val fallback = "IMG_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date()) + ".$ext"
+        val fallback = newClipboardImageName(ext)
         val safe = UriStager.sanitizeFileName(name.orEmpty())
         return when {
             safe.isEmpty() -> fallback

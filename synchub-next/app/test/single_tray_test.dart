@@ -10,6 +10,64 @@ import 'package:synchub/platform/tray_ownership.dart';
 import 'package:synchub/platform/win_integration.dart';
 
 void main() {
+  test('trial lets SyncHub watch only after SyncClipboard stops, and abort pauses SyncHub first', () {
+    final sim = ClipboardOwnerSim(officialRunning: true, syncHubWatching: false);
+    final trial = HandoffPlan.beginTrial(officialRunning: true);
+    expect(trial.actions, isNot(contains(HandoffAction.disableOfficialStartup)));
+    expect(trial.deletesUserData, isFalse);
+    for (final action in trial.actions) {
+      sim.apply(action);
+    }
+    expect(sim.officialRunning, isFalse);
+    expect(sim.syncHubWatching, isTrue);
+    expect(sim.startupEnabled, isTrue);
+    expect(sim.bothWriting, isFalse);
+
+    final abort = HandoffPlan.abortTrial();
+    expect(abort.actions.indexOf(HandoffAction.pauseSyncHubClipboard),
+        lessThan(abort.actions.indexOf(HandoffAction.startOfficialProcess)));
+    for (final action in abort.actions) {
+      sim.apply(action);
+    }
+    expect(sim.officialRunning, isTrue);
+    expect(sim.syncHubWatching, isFalse);
+    expect(sim.startupEnabled, isTrue);
+    expect(sim.deletedUserData, isFalse);
+  });
+
+  test('commit is refused while SyncClipboard is still running', () {
+    final early = HandoffPlan.commit(phase: HandoffPhase.idle, officialRunning: false);
+    expect(early.refused, isTrue);
+    expect(early.actions, isEmpty);
+    final busy = HandoffPlan.commit(phase: HandoffPhase.trial, officialRunning: true);
+    expect(busy.refused, isTrue);
+
+    final sim = ClipboardOwnerSim(officialRunning: false, syncHubWatching: true);
+    final commit = HandoffPlan.commit(phase: HandoffPhase.trial, officialRunning: false);
+    expect(commit.refused, isFalse);
+    for (final action in commit.actions) {
+      sim.apply(action);
+    }
+    expect(sim.startupEnabled, isFalse);
+    expect(sim.officialRunning, isFalse);
+    expect(sim.syncHubWatching, isTrue);
+    expect(sim.bothWriting, isFalse);
+    expect(sim.deletedUserData, isFalse);
+  });
+
+  test('task command parser keeps the executable path and drops arguments', () {
+    const xml = '<Exec><Command>"C:\\Apps\\SyncClipboard\\SyncClipboard.exe"</Command>'
+        '<Arguments>--minimized</Arguments></Exec>';
+    expect(commandFromTaskXml(xml), r'C:\Apps\SyncClipboard\SyncClipboard.exe');
+  });
+
+  test('abort command is visible before the official process starts', () {
+    final cmd = HandoffCommand.parse('{"op":"abort","paused":false,"exe":"C:\\\\Apps\\\\SyncClipboard.exe"}');
+    expect(cmd, isNotNull);
+    expect(cmd!.requestsAbort, isTrue);
+    expect(cmd.paused, isFalse);
+  });
+
   test('official process yields clipboard duty; a stopped process does not', () {
     const running = OfficialClipboardPresence(
       processRunning: true,

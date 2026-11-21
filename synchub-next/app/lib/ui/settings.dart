@@ -83,53 +83,86 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
-  Future<void> _confirmTrayTakeover() async {
+  Future<void> _beginClipboardTrial() async {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('只保留 SyncHub 托盘'),
+        title: const Text('临时暂停 SyncClipboard'),
         content: const Text(
-          '会先备份开机启动项，再禁用 SyncClipboard 的计划任务和登录启动项，并退出 SyncClipboard。\n\n'
-          '不删除 SyncClipboard 程序、配置、历史或已接收的文件。凭据只写入本机系统安全存储。\n'
-          '若剪贴板不正常，可以用「恢复旧自启」把开机项改回去。',
+          '只退出 SyncClipboard 进程，不改开机启动，也不删除程序、配置或历史。\n\n'
+          '退出成功之后，SyncHub 才开始同步剪贴板。请试文字、截图和单个文件。不正常就点「立即恢复」。',
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('确认接管')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('暂停并验证')),
         ],
       ),
     );
     if (ok != true || !mounted) return;
     setState(() => _trayBusy = true);
-    final backup = _handoffBackup ?? await WinIntegration.backupOfficialStartup();
-    if (backup == null) {
-      if (!mounted) return;
-      setState(() => _trayBusy = false);
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('备份失败，未改动启动项')));
+    final result = await WinIntegration.beginClipboardTrial();
+    if (result.backupDir != null) _handoffBackup = result.backupDir;
+    if (result.stopped) {
+      final login = await WinIntegration.readLegacySyncClipboardLogin();
+      if (login != null) {
+        await engine.updateConfig((c) {
+          if (c.customClipUrl.trim().isEmpty) {
+            c.customClipUrl = login.serverUrl;
+            c.customClipUser = login.username;
+            if (login.password.isNotEmpty) c.customClipPass = login.password;
+          } else if (c.customClipPass.isEmpty && login.password.isNotEmpty) {
+            c.customClipPass = login.password;
+          }
+        });
+      }
+      await PlatformBridge.instance?.refreshClipboardDuty();
+    }
+    await _refreshPlatformStates();
+    if (!mounted) return;
+    setState(() => _trayBusy = false);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(result.message)));
+  }
+
+  Future<void> _commitClipboardTrial() async {
+    final plan = HandoffPlan.commit(
+      phase: HandoffPhase.trial,
+      officialRunning: _official.processRunning,
+    );
+    if (plan.refused) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(plan.reason)));
       return;
     }
-    final login = await WinIntegration.readLegacySyncClipboardLogin();
-    if (login != null) {
-      await engine.updateConfig((c) {
-        if (c.customClipUrl.trim().isEmpty) {
-          c.customClipUrl = login.serverUrl;
-          c.customClipUser = login.username;
-          if (login.password.isNotEmpty) c.customClipPass = login.password;
-        } else if (c.customClipPass.isEmpty && login.password.isNotEmpty) {
-          c.customClipPass = login.password;
-        }
-      });
+    final backup = _handoffBackup;
+    if (backup == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('没有备份，未改开机项')));
+      return;
     }
-    final msg = await WinIntegration.disableOfficialStartup(backupDir: backup, stopProcess: true);
+    setState(() => _trayBusy = true);
+    final msg = await WinIntegration.disableOfficialStartup(backupDir: backup, stopProcess: false);
     await PlatformBridge.instance?.refreshClipboardDuty();
     await _refreshPlatformStates();
     if (!mounted) return;
-    setState(() {
-      _trayBusy = false;
-      _handoffBackup = backup;
-    });
-    final note = login == null ? msg : '$msg\n${WinIntegration.describeLogin(login)}';
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(note)));
+    setState(() => _trayBusy = false);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  Future<void> _abortClipboardTrial() async {
+    final backup = _handoffBackup;
+    if (backup == null) return;
+    setState(() => _trayBusy = true);
+    await PlatformBridge.instance?.holdSyncHubClipboard();
+    final restored = await WinIntegration.resumeOfficialProcess(backup);
+    await PlatformBridge.instance?.refreshClipboardDuty();
+    await _refreshPlatformStates();
+    if (!mounted) return;
+    setState(() => _trayBusy = false);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(
+        restored
+            ? '已先停止 SyncHub 剪贴板，再打开 SyncClipboard。开机项未改，配置和历史都还在。'
+            : '已停止 SyncHub 剪贴板，但没能打开 SyncClipboard。开机项未改。请手动打开原来的程序，避免两边一起写。',
+      ),
+    ));
   }
 
   Future<void> _rollbackTrayStartup() async {
@@ -475,8 +508,10 @@ class _SettingsPageState extends State<SettingsPage> {
               title: Text(_official.processRunning ? '当前有两个托盘' : '剪贴板由 SyncHub 负责'),
               subtitle: Text(
                 _official.processRunning
-                    ? 'SyncClipboard 正在运行，SyncHub 已暂停剪贴板监视，避免重复上传。文件收发不受影响。确认接管后只保留 SyncHub 托盘，不删除原程序、配置或历史。'
-                    : '未发现正在运行的 SyncClipboard。开机项${_official.startupTaskEnabled ? '仍会启动它' : '未启用'}。快捷键 Ctrl+Shift+V 发送当前剪贴板。',
+                    ? 'SyncClipboard 正在运行，SyncHub 已暂停剪贴板。文件收发继续。要验证剪贴板，先临时暂停旧程序。'
+                    : _official.startupTaskEnabled
+                        ? 'SyncClipboard 已退出，SyncHub 正在同步剪贴板。开机项仍会在下次登录启动旧程序。验证通过后再禁用开机项。'
+                        : '剪贴板由 SyncHub 负责，旧开机项已禁用。程序和配置都还在。',
               ),
             ),
           if (Platform.isWindows)
@@ -490,14 +525,26 @@ class _SettingsPageState extends State<SettingsPage> {
                     onPressed: _trayBusy ? null : _backupTrayStartup,
                     child: const Text('只备份启动项'),
                   ),
-                  FilledButton(
-                    onPressed: _trayBusy ? null : _confirmTrayTakeover,
-                    child: Text(_trayBusy ? '处理中…' : '确认接管'),
-                  ),
-                  TextButton(
-                    onPressed: _trayBusy || _handoffBackup == null ? null : _rollbackTrayStartup,
-                    child: const Text('恢复旧自启'),
-                  ),
+                  if (_official.processRunning)
+                    FilledButton(
+                      onPressed: _trayBusy ? null : _beginClipboardTrial,
+                      child: Text(_trayBusy ? '处理中…' : '临时暂停并验证'),
+                    ),
+                  if (!_official.processRunning && _official.startupTaskEnabled)
+                    FilledButton(
+                      onPressed: _trayBusy || _handoffBackup == null ? null : _commitClipboardTrial,
+                      child: const Text('验证通过，禁用旧开机启动'),
+                    ),
+                  if (!_official.processRunning && _handoffBackup != null && _official.startupTaskEnabled)
+                    OutlinedButton(
+                      onPressed: _trayBusy ? null : _abortClipboardTrial,
+                      child: const Text('立即恢复 SyncClipboard'),
+                    ),
+                  if (!_official.startupTaskEnabled && _handoffBackup != null)
+                    TextButton(
+                      onPressed: _trayBusy ? null : _rollbackTrayStartup,
+                      child: const Text('恢复旧开机启动'),
+                    ),
                 ],
               ),
             ),
