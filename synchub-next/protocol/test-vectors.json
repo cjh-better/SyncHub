@@ -1,0 +1,32 @@
+{
+  "chunks": [
+    {
+      "file": 0,
+      "chunk": 0,
+      "plaintext_hex": "68656c6c6f2073796e63687562",
+      "ciphertext_hex": "e99c7657e0313522a1bd185ab87f7a1ba812e962fc85528a380483ef87"
+    },
+    {
+      "file": 3,
+      "chunk": 1234567,
+      "plaintext_hex": "e8b7a8e7abafe4bca0e8be9320e29c93",
+      "ciphertext_hex": "fa29ea3230efc3547352513f6dd09a4850fcdeea6c316ead937385bff2105be0"
+    },
+    {
+      "file": 1,
+      "chunk": 0,
+      "plaintext_hex": "",
+      "ciphertext_hex": "d2928a456a3670c4b92f3e1a6d78276b"
+    }
+  ],
+  "description": "SyncHub E2E v1 vectors. Keys are raw X25519 scalars (hex); public keys are base64 as on the wire.",
+  "ephemeral_private_hex": "e8efefefefefefefefefefefefefefefefefefefefefefefefefefefefefef6f",
+  "ephemeral_public_b64": "eBpCG+L+7qXm5o5kohnNq4QApLP9D9cvUXpSKvOpJlY=",
+  "receiver_fingerprint": "QGDs-t27j-Ro9w",
+  "receiver_private_hex": "c8cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd4d",
+  "receiver_public_b64": "tb6oI9nJ/1dgkcVLfFlsCuKWiE8OFQKQ6IRV1/umEm8=",
+  "sender_private_hex": "a8abababababababababababababababababababababababababababababab6b",
+  "sender_public_b64": "43EthRoOXXm4McXjSrIrQaGYFx3iCbi4+sojoRxiSFk=",
+  "session": "sessAbc123",
+  "transfer_id": "tVectorTransfer01"
+}

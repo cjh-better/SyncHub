@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 加密账号与同步状态不参与云备份 / 设备迁移 -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="file" path="config.json" />
+        <exclude domain="file" path="state" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="file" path="config.json" />
+        <exclude domain="file" path="state" />
+    </device-transfer>
+</data-extraction-rules>

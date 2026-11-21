@@ -1,0 +1,26 @@
+[Unit]
+Description=SyncHub Gateway (device registry, presence, signaling, streaming relay)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+StateDirectory=synchub-gateway
+EnvironmentFile=/etc/synchub/gateway.env
+ExecStart=/usr/local/bin/synchub-gateway
+Restart=always
+RestartSec=3
+# hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <cache-path name="clip" path="clip/" />
+    <cache-path name="share" path="share/" />
+    <cache-path name="cache" path="." />
+    <files-path name="files" path="." />
+    <external-files-path name="external_files" path="." />
+    <external-cache-path name="external_cache" path="." />
+    <external-path name="download" path="Download/" />
+    <external-path name="external" path="." />
+</paths>
