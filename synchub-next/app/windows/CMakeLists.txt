@@ -61,6 +61,17 @@ add_subdirectory("runner")
 # them to the application.
 include(flutter/generated_plugins.cmake)
 
+# package:jni is an Android transitive of path_provider_android and
+# shared_preferences_android. Its Windows target is dartjni.dll, which
+# delay-loads jvm.dll. This app never calls JNI on Windows.
+set(_filtered_bundled_libs "")
+foreach(_lib ${PLUGIN_BUNDLED_LIBRARIES})
+  if(NOT _lib MATCHES "TARGET_FILE:jni>")
+    list(APPEND _filtered_bundled_libs "${_lib}")
+  endif()
+endforeach()
+set(PLUGIN_BUNDLED_LIBRARIES "${_filtered_bundled_libs}")
+
 
 # === Installation ===
 # Support files are copied into place next to the executable, so that it can
@@ -110,3 +121,24 @@ install(DIRECTORY "${PROJECT_BUILD_DIR}/${FLUTTER_ASSET_DIR_NAME}"
 install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   CONFIGURATIONS Profile;Release
   COMPONENT Runtime)
+
+# Run after the copy so neither the CMake plugin list nor native assets
+# can leave dartjni.dll in the folder next to synchub.exe.
+set(_synchub_flutter_root "")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/flutter/ephemeral/generated_config.cmake")
+  function(_synchub_read_flutter_root out_var)
+    include("${CMAKE_CURRENT_SOURCE_DIR}/flutter/ephemeral/generated_config.cmake")
+    set(${out_var} "${FLUTTER_ROOT}" PARENT_SCOPE)
+  endfunction()
+  _synchub_read_flutter_root(_synchub_flutter_root)
+endif()
+set(_strip_jni "${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/strip_windows_jni.ps1")
+install(CODE "
+  execute_process(
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"${_strip_jni}\" -BundleDir \"${CMAKE_INSTALL_PREFIX}\" -Dart \"${_synchub_flutter_root}/bin/dart.bat\"
+    RESULT_VARIABLE _strip_jni_rc
+  )
+  if(NOT _strip_jni_rc EQUAL 0)
+    message(FATAL_ERROR \"Removing Windows JNI assets failed (\${_strip_jni_rc})\")
+  endif()
+" COMPONENT Runtime)

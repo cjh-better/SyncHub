@@ -72,6 +72,10 @@ powershell -ExecutionPolicy Bypass -File .\scripts\windows_single_tray.ps1 -Roll
 
 删掉 `%LOCALAPPDATA%\Programs\SyncHub`、开始菜单和桌面快捷方式，以及 `HKCU\...\Run\SyncHub`。不要连带删除 `%APPDATA%\SyncClipboard` 或 `%APPDATA%\SyncHub\tray-handoff`，除非你明确要丢掉回滚材料。
 
+## JNI
+
+Windows 包不附带 `dartjni.dll` 或 `jvm.dll`。这两个文件来自 Android 插件的 JNI 依赖。Windows 上的路径、偏好和文件选择不走 JNI。打包步骤会删掉该 DLL，并从 `native_assets.json` / `NativeAssetsManifest.json` 里去掉对应条目；删不干净则构建失败。
+
 ## 图标
 
 文本源码里没有 `app/windows/runner/resources/app_icon.ico`（二进制文件未随快照导出）。当前构建不引用这个文件，窗口和托盘使用 Windows 自带的应用程序图标。若要沿用原来的图标，把该文件放回这个路径，并取消 `app/windows/runner/Runner.rc` 里对应一行的注释。

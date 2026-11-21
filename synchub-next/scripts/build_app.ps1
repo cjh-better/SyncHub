@@ -43,6 +43,11 @@ try {
         & $flutter build windows --release
         if ($LASTEXITCODE -ne 0) { throw "flutter build windows failed ($LASTEXITCODE)" }
 
+        $releaseDir = Join-Path $app "build\windows\x64\runner\Release"
+        $dart = Join-Path (Split-Path -Parent $flutter) "dart.bat"
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "strip_windows_jni.ps1") -BundleDir $releaseDir -Dart $dart
+        if ($LASTEXITCODE -ne 0) { throw "Windows bundle still depends on JNI/JVM" }
+
         $winStage = Join-Path $out "windows-x64"
         if (Test-Path $winStage) { Remove-Item -Recurse -Force $winStage }
         New-Item -ItemType Directory -Force $winStage | Out-Null
@@ -59,6 +64,8 @@ try {
                 throw "Windows bundle is missing $required"
             }
         }
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "strip_windows_jni.ps1") -BundleDir $winStage -Dart $dart
+        if ($LASTEXITCODE -ne 0) { throw "Staged Windows bundle still depends on JNI/JVM" }
 
         $zip = Join-Path $out "SyncHub-windows-x64.zip"
         if (Test-Path $zip) { Remove-Item -Force $zip }

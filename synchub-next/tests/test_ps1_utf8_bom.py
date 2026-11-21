@@ -9,6 +9,7 @@ DISTRIBUTED = [
     ROOT / "scripts" / "install_windows.ps1",
     ROOT / "scripts" / "windows_single_tray.ps1",
     ROOT / "scripts" / "p0_acceptance.ps1",
+    ROOT / "scripts" / "strip_windows_jni.ps1",
     ROOT / "server" / "deploy" / "build_linux.ps1",
     ROOT / "tests" / "run_all_e2e.ps1",
 ]
@@ -29,6 +30,7 @@ class Ps1EncodingTest(unittest.TestCase):
         self.assertIn("Windows bundle is missing", text)
         installer = (ROOT / "scripts" / "install_windows.ps1").read_text(encoding="utf-8-sig")
         self.assertIn("windows_single_tray.ps1 must be next to install_windows.ps1", installer)
+        self.assertIn("strip_windows_jni.ps1", text)
 
 
 if __name__ == "__main__":
