@@ -1,5 +1,9 @@
 # 变更说明
 
+## 1.1.4+10
+
+- Windows 窗口和托盘改回编译进程序的 `app_icon.ico`。仓库里没有这份原图标，构建不会再改用系统图标。`build_app.ps1 -AppIcon` 或 `SYNCHUB_APP_ICON` 必须指向 33772 字节、SHA256 为 `C098D3FC85CACFF98B8E69811B48E9F0D852FCEE278132D794411D978869CBF8` 的原文件，校验通过后才复制进资源脚本。
+
 ## 1.1.3+9
 
 - 覆盖安装会把旧构建留下的 `dartjni.dll` 和 `jvm.dll` 先移到 `%LOCALAPPDATA%\Programs\SyncHub-upgrade`，不跟随符号链接，也不动其他 DLL。`-QuarantineJniOnly` 只做这一步。`-RestoreJni` 可以按清单移回。旧文件还在不表示程序已经损坏；移走是为了和干净安装一致。

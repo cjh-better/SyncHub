@@ -50,11 +50,9 @@ END
 // Icon
 //
 
-// The branded resources\app_icon.ico was not part of the text source
-// snapshot, so the resource script does not reference it. Window and tray
-// code falls back to the system IDI_APPLICATION icon. To use the existing
-// icon, add that file and uncomment the next line:
-// IDI_APP_ICON            ICON                    "resources\\app_icon.ico"
+// Original SyncHub icon. The build copies the verified app_icon.ico here
+// before compiling. A missing file fails the resource compiler.
+IDI_APP_ICON            ICON                    "resources\\app_icon.ico"
 
 
 /////////////////////////////////////////////////////////////////////////////

@@ -4,7 +4,10 @@
 #  - Gradle 9.x Kotlin-DSL script compilation is broken on this machine, so the
 #    Android project is pinned to Gradle 8.14.3 + AGP 8.11.1 + Kotlin 2.2.21.
 #  - The global JAVA_HOME points at a broken JDK, so JDK 17 is set per process.
-param([ValidateSet("windows", "apk", "all")][string]$Target = "all")
+param(
+    [ValidateSet("windows", "apk", "all")][string]$Target = "all",
+    [string]$AppIcon = ""
+)
 $ErrorActionPreference = "Stop"
 
 function Assert-WindowsPowerShellScript([string]$Path) {
@@ -31,6 +34,51 @@ $env:FLUTTER_STORAGE_BASE_URL = "https://storage.flutter-io.cn"
 $flutter = "M:\flutter\flutter\bin\flutter.bat"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $app = Join-Path $repoRoot "app"
+$expectedIconSha = "C098D3FC85CACFF98B8E69811B48E9F0D852FCEE278132D794411D978869CBF8"
+$expectedIconBytes = 33772
+
+function Resolve-SyncHubAppIcon([string]$ExplicitPath) {
+    $dest = Join-Path $app "windows\runner\resources\app_icon.ico"
+    $source = $ExplicitPath
+    if ([string]::IsNullOrWhiteSpace($source)) { $source = $env:SYNCHUB_APP_ICON }
+    if ([string]::IsNullOrWhiteSpace($source) -and (Test-Path -LiteralPath $dest)) { $source = $dest }
+    if ([string]::IsNullOrWhiteSpace($source) -or -not (Test-Path -LiteralPath $source)) {
+        throw @"
+Windows build needs the original SyncHub icon. This repository does not contain it, and the build will not substitute the system icon.
+Pass -AppIcon <path> or set SYNCHUB_APP_ICON to the existing app_icon.ico.
+Expected size $expectedIconBytes bytes and SHA256 $expectedIconSha.
+"@
+    }
+    $item = Get-Item -LiteralPath $source -Force
+    if ($item.PSIsContainer -or ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+        throw "Refusing app icon path. It must be the original file, not a directory or a link: $source"
+    }
+    if ($item.Length -ne $expectedIconBytes) {
+        throw "Refusing app icon. Size is $($item.Length), expected $expectedIconBytes bytes. The system icon will not be used instead."
+    }
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $stream = [System.IO.File]::Open($item.FullName, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+    try {
+        $actual = ([System.BitConverter]::ToString($sha.ComputeHash($stream))).Replace("-", "")
+    } finally {
+        $stream.Dispose()
+        $sha.Dispose()
+    }
+    if ($actual -ne $expectedIconSha) {
+        throw "Refusing app icon. SHA256 $actual does not match the original SyncHub icon $expectedIconSha."
+    }
+    $destFull = [System.IO.Path]::GetFullPath($dest)
+    $resources = [System.IO.Path]::GetFullPath((Join-Path $app "windows\runner\resources"))
+    if (-not $resources.EndsWith("\")) { $resources = $resources + "\" }
+    if (-not $destFull.StartsWith($resources, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to copy the icon outside windows\runner\resources."
+    }
+    New-Item -ItemType Directory -Force -Path $resources | Out-Null
+    if (-not [string]::Equals($item.FullName, $destFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+        [System.IO.File]::Copy($item.FullName, $destFull, $true)
+    }
+    return $destFull
+}
 $out = Join-Path $repoRoot "dist"
 New-Item -ItemType Directory -Force $out | Out-Null
 
@@ -40,6 +88,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "flutter pub get failed ($LASTEXITCODE)" }
 
     if ($Target -in "windows", "all") {
+        $icon = Resolve-SyncHubAppIcon $AppIcon
+        Write-Host "windows icon -> $icon"
         & $flutter build windows --release
         if ($LASTEXITCODE -ne 0) { throw "flutter build windows failed ($LASTEXITCODE)" }
 

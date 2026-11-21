@@ -1107,9 +1107,6 @@ void FlutterWindow::AddOrUpdateTrayIcon() {
   nid.uCallbackMessage = kTrayCallbackMessage;
   HICON tray_icon = ::LoadIconW(::GetModuleHandleW(nullptr),
                                MAKEINTRESOURCEW(IDI_APP_ICON));
-  if (tray_icon == nullptr) {
-    tray_icon = ::LoadIconW(nullptr, IDI_APPLICATION);
-  }
   nid.hIcon = tray_icon;
   CopyWideTruncated(nid.szTip, sizeof(nid.szTip) / sizeof(wchar_t),
                     tray_tooltip_);

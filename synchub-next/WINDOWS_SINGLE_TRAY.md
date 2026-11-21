@@ -102,7 +102,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_windows.ps
 
 ## 图标
 
-文本源码里没有 `app/windows/runner/resources/app_icon.ico`（二进制文件未随快照导出）。当前构建不引用这个文件，窗口和托盘使用 Windows 自带的应用程序图标。若要沿用原来的图标，把该文件放回这个路径，并取消 `app/windows/runner/Runner.rc` 里对应一行的注释。
+仓库和历史提交里没有原来的 Windows `app_icon.ico`。macOS 目录里的蓝色箭头图标是脚本生成的另一份图，不能当作这份 Windows 图标。窗口和托盘只加载编进程序的 `IDI_APP_ICON`，缺少时构建失败，不再换成系统图标。
+
+Windows 构建需要本机那份原文件：33772 字节，SHA256 `C098D3FC85CACFF98B8E69811B48E9F0D852FCEE278132D794411D978869CBF8`。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build_app.ps1 -Target windows -AppIcon <原 app_icon.ico 的路径>
+```
+
+也可以设置 `SYNCHUB_APP_ICON`。路径必须是普通文件。大小或哈希不符会停止，不会继续打包。
 
 ## Linux 上验证不了的部分
 

@@ -55,6 +55,21 @@ class Ps1EncodingTest(unittest.TestCase):
         self.assertIn("preservedOtherDlls", text)
         self.assertNotIn("*.dll", text)
 
+    def test_windows_build_requires_original_icon(self):
+        text = (ROOT / "scripts" / "build_app.ps1").read_text(encoding="utf-8-sig")
+        self.assertIn("-AppIcon", text)
+        self.assertIn("SYNCHUB_APP_ICON", text)
+        self.assertIn("C098D3FC85CACFF98B8E69811B48E9F0D852FCEE278132D794411D978869CBF8", text)
+        self.assertIn("33772", text)
+        self.assertIn("will not substitute the system icon", text)
+        rc = (ROOT / "app" / "windows" / "runner" / "Runner.rc").read_text(encoding="utf-8")
+        self.assertIn('IDI_APP_ICON            ICON                    "resources\\\\app_icon.ico"', rc)
+        self.assertNotIn("IDI_APPLICATION", rc)
+        for name in ("flutter_window.cpp", "win32_window.cpp"):
+            cpp = (ROOT / "app" / "windows" / "runner" / name).read_text(encoding="utf-8")
+            self.assertNotIn("IDI_APPLICATION", cpp)
+        self.assertFalse((ROOT / "app" / "windows" / "runner" / "resources" / "app_icon.ico").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
