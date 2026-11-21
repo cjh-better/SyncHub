@@ -104,18 +104,6 @@ class _SettingsPageState extends State<SettingsPage> {
     final result = await WinIntegration.beginClipboardTrial();
     if (result.backupDir != null) _handoffBackup = result.backupDir;
     if (result.stopped) {
-      final login = await WinIntegration.readLegacySyncClipboardLogin();
-      if (login != null) {
-        await engine.updateConfig((c) {
-          if (c.customClipUrl.trim().isEmpty) {
-            c.customClipUrl = login.serverUrl;
-            c.customClipUser = login.username;
-            if (login.password.isNotEmpty) c.customClipPass = login.password;
-          } else if (c.customClipPass.isEmpty && login.password.isNotEmpty) {
-            c.customClipPass = login.password;
-          }
-        });
-      }
       await PlatformBridge.instance?.refreshClipboardDuty();
     }
     await _refreshPlatformStates();

@@ -5,7 +5,7 @@
 ## 现在机器上的两个托盘
 
 - SyncClipboard 3.3.3.0：`%LOCALAPPDATA%\Programs\SyncClipboard\SyncClipboard.exe`，计划任务 `\SyncClipboardStartup`。
-- SyncHub：`%LOCALAPPDATA%\Programs\SyncHub\synchub.exe --minimized`，`HKCU\...\Run\SyncHub`。已安装文件版本是 1.1.0+6。源码现为 1.1.2+8。
+- SyncHub：`%LOCALAPPDATA%\Programs\SyncHub\synchub.exe --minimized`，`HKCU\...\Run\SyncHub`。已安装过 1.1.2+8。源码现为 1.1.3+9。1.1.2+8 的程序在试用恢复后不会把暂停期间的剪贴板外发，需要整包重装，不能只换脚本。
 - 旧 Python 接收任务 `\SyncHubAutoReceiver` 已经禁用。不要为了单托盘再去删它的文件。
 
 官方 SyncClipboard 3.3.3 是带托盘的独立程序，没有可以和 SyncHub 共用剪贴板监视的稳定无托盘模式。只隐藏图标或直接结束进程会留下第二套监视，或者丢掉文字、图片和文件粘贴。SyncHub 自己实现了同一套 `SyncClipboard.json` 协议，所以接管后由它监视剪贴板。
@@ -41,6 +41,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\windows_single_tray.ps1 -Tria
 退出用的是 SyncClipboard 3.3.3 自己的命名管道 `Global\SyncClipboard-Pipe-<用户名>-`，写入一行 `Shutdown`。上游 `AppInstance` 收到后调用 `ExitAsync`：先停内部服务，再 `Application.Exit`，进程结束。这和托盘菜单「退出」是同一条路，不是把窗口藏起来。不要用会再启动一个新进程的重启参数，也不要 `taskkill /F`。
 
 脚本先等最多 45 秒。若进程还在，窗口会写出托盘步骤，并再等 3 分钟：右键通知区域的 SyncClipboard 图标，点「退出」。在这段等待里点退出后，同一次 `-Trial` 会继续，不必先失败再重跑。若 3 分钟后进程仍在，命令失败退出，开机项不变，SyncHub 继续暂停剪贴板。进程已经退出后再运行 `-Trial` 会直接进入验证。
+
+进程退出后，SyncHub 看到 `command.json` 的 `op=trial` 会清掉 Abort 留下的暂停，改用官方账号的 `SyncClipboard.json`（不是网关的 `/api/hub/sc`），并上传暂停期间已经变化的剪贴板。设置里的按钮运行的是同一个 `-Trial`，没有另一套短等待。
 
 2. 试文字、截图和单个文件。文件收发本来就不依赖 SyncClipboard。
 

@@ -103,6 +103,58 @@ class HandoffCommand {
   }
 
   bool get requestsAbort => op == 'abort';
+
+  bool get requestsTrial => op == 'trial';
+}
+
+/// What one clipboard-duty probe is allowed to do.
+///
+/// A previous abort latches an explicit pause. Trial clears that latch when
+/// SyncClipboard.exe is gone, even if the latch was never cleared by seeing
+/// the official process running again.
+class ClipboardProbe {
+  final bool pauseSyncHub;
+  final bool acknowledgeAbort;
+  final bool clearExplicitHold;
+  final bool adoptOfficialAccount;
+
+  const ClipboardProbe({
+    required this.pauseSyncHub,
+    required this.acknowledgeAbort,
+    required this.clearExplicitHold,
+    required this.adoptOfficialAccount,
+  });
+}
+
+ClipboardProbe decideClipboardProbe({
+  required bool explicitHold,
+  required bool officialRunning,
+  required HandoffCommand? command,
+}) {
+  if (command != null && command.requestsAbort && !command.paused) {
+    return const ClipboardProbe(
+      pauseSyncHub: true,
+      acknowledgeAbort: true,
+      clearExplicitHold: false,
+      adoptOfficialAccount: false,
+    );
+  }
+  if (command != null && command.requestsTrial && !officialRunning) {
+    return const ClipboardProbe(
+      pauseSyncHub: false,
+      acknowledgeAbort: false,
+      clearExplicitHold: true,
+      adoptOfficialAccount: true,
+    );
+  }
+  final abortLatch = command?.requestsAbort ?? false;
+  final pause = explicitHold || officialRunning || abortLatch;
+  return ClipboardProbe(
+    pauseSyncHub: pause,
+    acknowledgeAbort: false,
+    clearExplicitHold: explicitHold && officialRunning,
+    adoptOfficialAccount: false,
+  );
 }
 
 String? _jsonString(String json, String key) {

@@ -678,9 +678,9 @@ Get-CimInstance Win32_Process -Filter "Name = 'python.exe' OR Name = 'pythonw.ex
     return res.exitCode;
   }
 
-  /// Backup, remember the official executable, then stop only that process.
-  /// Startup entries stay as they are. SyncHub must not watch until this
-  /// reports [TrialPauseResult.stopped].
+  /// Runs the same `windows_single_tray.ps1 -Trial` the operator runs.
+  /// The script sends the official Shutdown pipe message, waits, then writes
+  /// `command.json`. This button does not keep a second, shorter stop path.
   static Future<TrialPauseResult> beginClipboardTrial() async {
     if (!Platform.isWindows) {
       return const TrialPauseResult(stopped: false, message: '当前不是 Windows');
@@ -689,41 +689,51 @@ Get-CimInstance Win32_Process -Filter "Name = 'python.exe' OR Name = 'pythonw.ex
     if (plan.actions.contains(HandoffAction.disableOfficialStartup)) {
       return const TrialPauseResult(stopped: false, message: '临时验证不能改开机项');
     }
-    final backup = await backupOfficialStartup();
-    if (backup == null) {
-      return const TrialPauseResult(stopped: false, message: '备份失败，未退出 SyncClipboard');
+    final script = installedSingleTrayScript();
+    if (script == null) {
+      return const TrialPauseResult(
+        stopped: false,
+        message: '找不到同目录的 windows_single_tray.ps1。请安装同一版本的程序和脚本，不要用旧的短等待。开机项未改。',
+      );
     }
-    final exe = await locateOfficialExecutable();
-    if (exe != null && exe.isNotEmpty) {
-      await File(p.join(backup, 'official-exe.txt')).writeAsString(exe);
-    }
-    final running = await _imageRunning(TrayTakeoverPlan.officialImage);
-    if (running) {
-      final code = await _stopOfficialViaHelper();
-      if (code != 0) {
-        return TrialPauseResult(
-          stopped: false,
-          backupDir: backup,
-          exePath: exe,
-          message: 'SyncClipboard 仍在运行。${OfficialExitPolicy.traySteps}开机项未改，SyncHub 不会开始监视剪贴板。',
-        );
-      }
-    }
-    if (await _imageRunning(TrayTakeoverPlan.officialImage)) {
+    final res = await Process.run('powershell.exe', [
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      script,
+      '-Trial',
+    ]);
+    final output = '${res.stdout}\n${res.stderr}';
+    final backup = _backupDirFromTrialOutput(output) ?? await _latestTrialDir();
+    if (res.exitCode != 0 || await _imageRunning(TrayTakeoverPlan.officialImage)) {
       return TrialPauseResult(
         stopped: false,
         backupDir: backup,
-        exePath: exe,
         message: 'SyncClipboard 仍在运行。${OfficialExitPolicy.traySteps}开机项未改，SyncHub 不会开始监视剪贴板。',
       );
     }
-    await _writeCommand(<String, Object>{'op': 'trial', 'paused': false, 'exe': exe ?? ''});
     return TrialPauseResult(
       stopped: true,
       backupDir: backup,
-      exePath: exe,
       message: '已临时退出 SyncClipboard。开机项没改。现在可以验证 SyncHub 的剪贴板。',
     );
+  }
+
+  static String? _backupDirFromTrialOutput(String output) {
+    final match = RegExp(r'BACKUP_DIR=(.+)').firstMatch(output);
+    final dir = match?.group(1)?.trim();
+    if (dir == null || dir.isEmpty) return null;
+    return dir;
+  }
+
+  static Future<String?> _latestTrialDir() async {
+    final root = handoffRoot();
+    if (root == null) return null;
+    final file = File(p.join(root, 'latest-trial.txt'));
+    if (!await file.exists()) return null;
+    final dir = (await file.readAsString()).trim();
+    return dir.isEmpty ? null : dir;
   }
 
   /// Start the official executable recorded in [backupDir]. Does not delete files

@@ -370,22 +370,38 @@ class PlatformBridge {
     if (!Platform.isWindows) return;
     try {
       final cmd = await WinIntegration.readHandoffCommand();
-      if (cmd != null && cmd.requestsAbort && !cmd.paused) {
+      officialClipboard = await WinIntegration.inspectOfficialClipboard();
+      final decision = decideClipboardProbe(
+        explicitHold: holdClipboard,
+        officialRunning: officialClipboard.processRunning,
+        command: cmd,
+      );
+      if (decision.acknowledgeAbort) {
         holdClipboard = true;
         await engine.clipSync.setYieldToOfficialClient(true);
         await WinIntegration.markAbortPaused();
-        officialClipboard = await WinIntegration.inspectOfficialClipboard();
         return;
       }
-      officialClipboard = await WinIntegration.inspectOfficialClipboard();
-      final pause = holdClipboard ||
-          officialClipboard.processRunning ||
-          (cmd?.requestsAbort ?? false);
-      await engine.clipSync.setYieldToOfficialClient(pause);
-      if (holdClipboard && officialClipboard.processRunning) {
-        holdClipboard = false;
+      if (decision.adoptOfficialAccount) {
+        await _adoptOfficialClipboardAccount();
       }
+      if (decision.clearExplicitHold) holdClipboard = false;
+      await engine.clipSync.setYieldToOfficialClient(decision.pauseSyncHub);
     } catch (_) {}
+  }
+
+  /// Trial watches the same SyncClipboard.json the official client uses.
+  /// The gateway path `/api/hub/sc` is a different profile URL.
+  Future<void> _adoptOfficialClipboardAccount() async {
+    final login = await WinIntegration.readLegacySyncClipboardLogin();
+    if (login == null || login.serverUrl.isEmpty) return;
+    final next = ClipEndpointConfig.custom(
+      serverUrl: login.serverUrl,
+      username: login.username,
+      password: login.password,
+    );
+    if (engine.clipSync.endpoint.sameOfficialProfile(next)) return;
+    await engine.configureClipboardEndpoint(next);
   }
 
   Future<void> _handleSystemEvent(String event) async {

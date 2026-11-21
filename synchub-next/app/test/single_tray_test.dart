@@ -152,13 +152,17 @@ void main() {
     expect(await partial.exists(), isFalse);
   });
 
-  test('SyncHub pauses clipboard upload while yielding and resumes without pushing the baseline', () async {
-    final transport = FakeClipTransport()..setRemoteText('server-init');
-    final clip = MemoryClipboardAdapter(initialPayload: const ClipboardTextPayload('local'));
+  test('abort hold then trial uploads a Windows clipboard sequence', () async {
+    final transport = FakeClipTransport()..setRemoteText('already-on-server');
+    final clip = MemoryClipboardAdapter(initialPayload: const ClipboardTextPayload('already-on-server'));
     final tmp = await Directory.systemTemp.createTemp('synchub_yield_');
     final svc = ClipboardSync(
       supportDir: tmp.path,
-      endpoint: ClipEndpointConfig.custom(serverUrl: 'http://127.0.0.1:9', username: 'u', password: 'fixture-pass'),
+      endpoint: ClipEndpointConfig.custom(
+        serverUrl: 'https://clip.example',
+        username: 'u',
+        password: 'fixture-pass',
+      ),
       adapter: clip,
       transport: transport,
       localWatchInterval: const Duration(hours: 1),
@@ -168,21 +172,59 @@ void main() {
       svc.dispose();
       await deleteOwnedFixture(tmp);
     });
+
     await svc.start();
+    expect(transport.puts, 0);
+
+    var hold = false;
+    var officialRunning = true;
+    HandoffCommand? command;
+    var probe = decideClipboardProbe(
+      explicitHold: hold,
+      officialRunning: officialRunning,
+      command: command,
+    );
+    expect(probe.pauseSyncHub, isTrue);
+    expect(probe.adoptOfficialAccount, isFalse);
     await svc.setYieldToOfficialClient(true);
-    expect(svc.yieldsToOfficialClient, isTrue);
-    expect(svc.isRunning, isFalse);
-    clip.copyText('while-official-owns-clipboard');
-    expect(await svc.pollLocalOnce(), isNull);
-    expect(transport.puts, 0);
+
+    command = const HandoffCommand(op: 'abort', paused: false);
+    probe = decideClipboardProbe(
+      explicitHold: hold,
+      officialRunning: officialRunning,
+      command: command,
+    );
+    expect(probe.acknowledgeAbort, isTrue);
+    expect(probe.pauseSyncHub, isTrue);
+    hold = true;
+    command = const HandoffCommand(op: 'abort', paused: true);
+
+    officialRunning = false;
+    command = const HandoffCommand(op: 'trial', paused: false);
+    probe = decideClipboardProbe(
+      explicitHold: hold,
+      officialRunning: officialRunning,
+      command: command,
+    );
+    expect(probe.pauseSyncHub, isFalse);
+    expect(probe.clearExplicitHold, isTrue);
+    expect(probe.adoptOfficialAccount, isTrue);
+    final gateway = ClipEndpointConfig.gateway(serverUrl: 'https://clip.example', token: 'token');
+    final official = svc.endpoint;
+    expect(gateway.baseUrl, endsWith('/api/hub/sc'));
+    expect(official.baseUrl, 'https://clip.example');
+    expect(gateway.sameOfficialProfile(official), isFalse);
+
+    clip.stageNativeText('SyncHub-test-sequence');
     await svc.setYieldToOfficialClient(false);
-    expect(svc.isRunning, isTrue);
-    expect(await svc.pollLocalOnce(), isNull);
-    expect(transport.puts, 0);
-    clip.copyText('after-takeover');
-    await svc.pollLocalOnce();
-    expect(transport.puts, greaterThan(0));
-    expect(transport.profile.text, 'after-takeover');
+    await svc.flushPending();
+    expect(transport.profile.text, 'SyncHub-test-sequence');
+    expect(transport.puts, 1);
+
+    clip.stageNativeText('SyncHub-test-sequence-2');
+    await svc.flushPending();
+    expect(transport.profile.text, 'SyncHub-test-sequence-2');
+    expect(transport.puts, 2);
   });
 
   test('remote File is staged inside clip_inbox and placed on the clipboard', () async {

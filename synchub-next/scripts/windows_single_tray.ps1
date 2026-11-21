@@ -265,6 +265,8 @@ if ($Trial) {
     }
     @{ op = "trial"; paused = $false; exe = $exe } | ConvertTo-Json |
         Set-Content -LiteralPath (Join-Path (Get-HandoffRoot) "command.json") -Encoding UTF8
+    Set-Content -LiteralPath (Join-Path (Get-HandoffRoot) "latest-trial.txt") -Value $saved -Encoding UTF8
+    Write-Output "BACKUP_DIR=$saved"
     Write-Ok "已临时退出 SyncClipboard。开机项未改。请验证文字、截图和单个文件。"
     Write-Step "通过: -Takeover -Confirm -BackupDir `"$saved`""
     Write-Step "失败: -AbortTrial -BackupDir `"$saved`""

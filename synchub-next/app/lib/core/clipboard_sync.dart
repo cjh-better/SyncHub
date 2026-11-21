@@ -361,6 +361,16 @@ class ClipEndpointConfig {
 
   bool get isConfigured => baseUrl.isNotEmpty;
 
+  /// True when both sides use the official SyncClipboard profile URL.
+  /// The gateway prefix `/api/hub/sc` is not that URL.
+  bool sameOfficialProfile(ClipEndpointConfig other) {
+    return useCustomServer &&
+        other.useCustomServer &&
+        baseUrl == other.baseUrl &&
+        customUsername == other.customUsername &&
+        customPassword == other.customPassword;
+  }
+
   ClipEndpointConfig copyWith({
     bool? useCustomServer,
     String? gatewayServerUrl,
@@ -1260,6 +1270,14 @@ class MemoryClipboardAdapter implements ClipboardAdapter {
     if (!_events.isClosed) _events.add(const <String, dynamic>{'type': 'clipboard'});
   }
 
+  /// Windows `WM_CLIPBOARDUPDATE` shape: a sequence number and no `type`.
+  void stageNativeText(String text) {
+    privateFlag = false;
+    _payload = ClipboardTextPayload(text);
+    _changeCount++;
+    if (!_events.isClosed) _events.add(<String, dynamic>{'seq': _changeCount});
+  }
+
   void copyImage(String fileName, List<int> bytes) {
     privateFlag = false;
     _payload = ClipboardImagePayload(fileName, Uint8List.fromList(bytes));
@@ -1347,9 +1365,15 @@ class PlatformClipboardAdapter implements ClipboardAdapter {
       StreamController<Map<String, dynamic>>.broadcast();
 
   static void notifyClipboardChanged([Map<String, dynamic>? data]) {
-    if (!_desktopEvents.isClosed) {
-      _desktopEvents.add(data ?? const <String, dynamic>{'type': 'clipboard'});
+    if (_desktopEvents.isClosed) return;
+    final event = <String, dynamic>{...?data};
+    final type = event['type'] as String? ?? '';
+    if (type.isEmpty && (event.containsKey('seq') || event.containsKey('changeCount'))) {
+      event['type'] = 'clipboard_changed';
+    } else if (event.isEmpty) {
+      event['type'] = 'clipboard';
     }
+    _desktopEvents.add(event);
   }
 
   /// Shared broadcast stream for `EventChannel('synchub/events')` on Android/iOS
@@ -1694,18 +1718,20 @@ class ClipboardSync extends ChangeNotifier {
   }
 
   /// While official SyncClipboard.exe is running, do not also poll or upload.
+  /// Leaving that pause publishes the clipboard that changed while paused.
   Future<void> setYieldToOfficialClient(bool pause) async {
     if (_yieldToOfficial == pause) return;
+    final leavingPause = _yieldToOfficial && !pause;
     _yieldToOfficial = pause;
     if (pause) {
-      if (_running) await stop();
+      if (_running) await stop(sealStore: false);
       _setStatus(const ClipStatus(
         text: '检测到 SyncClipboard 正在运行，已暂停剪贴板监视，避免重复上传。文件收发仍由 SyncHub 继续。',
       ));
       return;
     }
     if (_enabled) {
-      await start();
+      await start(publishPendingLocal: leavingPause);
     } else {
       _setStatus(const ClipStatus(text: '剪贴板同步：已关闭'));
     }
@@ -1766,9 +1792,19 @@ class ClipboardSync extends ChangeNotifier {
     }
   }
 
+  /// Finishes queued clipboard work. Tests use this instead of sleeping.
+  @visibleForTesting
+  Future<void> flushPending() async {
+    await _pending;
+    await Future<void>.delayed(Duration.zero);
+    await _pending;
+  }
+
   /// Starts bidirectional clipboard sync, recording the current local clipboard
   /// as baseline so pre-existing clipboard contents are not pushed on launch.
-  Future<void> start() async {
+  /// [publishPendingLocal] uploads a change that arrived while SyncClipboard
+  /// still owned the clipboard.
+  Future<void> start({bool publishPendingLocal = false}) async {
     if (_yieldToOfficial) {
       _setStatus(const ClipStatus(
         text: '检测到 SyncClipboard 正在运行，已暂停剪贴板监视，避免重复上传。文件收发仍由 SyncHub 继续。',
@@ -1824,7 +1860,10 @@ class ClipboardSync extends ChangeNotifier {
           final name = (evt['fileName'] as String?) ?? PlatformClipboardAdapter._defaultImageFileName();
           _track(_pushPayload(ClipboardImagePayload(name, bytes)));
         }
-      } else if (type == 'clipboard' || type == 'clipboard_changed') {
+      } else if (type == 'clipboard' ||
+          type == 'clipboard_changed' ||
+          (type.isEmpty && (evt.containsKey('seq') || evt.containsKey('changeCount')))) {
+        // Windows sends WM_CLIPBOARDUPDATE as {seq: n} with no type.
         _track(pollLocalOnce());
       }
     });
@@ -1839,13 +1878,23 @@ class ClipboardSync extends ChangeNotifier {
     }
 
     _scheduleRemote(const Duration(milliseconds: 200), gen);
+    if (publishPendingLocal) {
+      await _publishPendingLocal();
+    }
+  }
+
+  Future<void> _publishPendingLocal() async {
+    _lastChangeCount = null;
+    _lastFallbackSig = null;
+    await pollLocalOnce();
   }
 
   void _track(Future<Object?> work) {
     _pending = _pending.then((_) => work.then<void>((_) {})).catchError((Object _) {});
   }
 
-  Future<void> stop() async {
+  Future<void> stop({bool sealStore = true}) async {
+    final wasRunning = _running;
     _lifecycleGen++;
     _running = false;
     _localTimer?.cancel();
@@ -1858,7 +1907,7 @@ class ClipboardSync extends ChangeNotifier {
       await _pending;
     } catch (_) {}
     await _stateStore.flush();
-    if (_stateStore is FileClipStateStore) {
+    if (sealStore && wasRunning && _stateStore is FileClipStateStore) {
       await (_stateStore as FileClipStateStore).seal();
     }
   }
