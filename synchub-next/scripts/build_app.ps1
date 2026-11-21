@@ -34,39 +34,39 @@ $env:FLUTTER_STORAGE_BASE_URL = "https://storage.flutter-io.cn"
 $flutter = "M:\flutter\flutter\bin\flutter.bat"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $app = Join-Path $repoRoot "app"
-$expectedIconSha = "C098D3FC85CACFF98B8E69811B48E9F0D852FCEE278132D794411D978869CBF8"
-$expectedIconBytes = 33772
+function Assert-WindowsIconFile([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path)) {
+        throw "Windows build needs app/windows/runner/resources/app_icon.ico. The build will not substitute the system icon. Pass -AppIcon only to use a different .ico."
+    }
+    $item = Get-Item -LiteralPath $Path -Force
+    if ($item.PSIsContainer -or ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+        throw "Refusing app icon path. It must be a regular .ico file, not a directory or a link: $Path"
+    }
+    if ($item.Length -lt 22) {
+        throw "Refusing app icon. The file is too small to be an ICO: $Path"
+    }
+    $stream = [System.IO.File]::Open($item.FullName, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+    try {
+        $header = New-Object byte[] 6
+        $read = $stream.Read($header, 0, 6)
+        if ($read -ne 6 -or $header[0] -ne 0 -or $header[1] -ne 0 -or $header[2] -ne 1 -or $header[3] -ne 0) {
+            throw "Refusing app icon. The file is not an ICO: $Path"
+        }
+        $count = [int]$header[4] + (256 * [int]$header[5])
+        if ($count -lt 1) { throw "Refusing app icon. The ICO contains no images: $Path" }
+        $tableBytes = 6 + ($count * 16)
+        if ($item.Length -lt $tableBytes) { throw "Refusing app icon. The ICO directory is truncated: $Path" }
+    } finally {
+        $stream.Dispose()
+    }
+}
 
 function Resolve-SyncHubAppIcon([string]$ExplicitPath) {
     $dest = Join-Path $app "windows\runner\resources\app_icon.ico"
     $source = $ExplicitPath
     if ([string]::IsNullOrWhiteSpace($source)) { $source = $env:SYNCHUB_APP_ICON }
-    if ([string]::IsNullOrWhiteSpace($source) -and (Test-Path -LiteralPath $dest)) { $source = $dest }
-    if ([string]::IsNullOrWhiteSpace($source) -or -not (Test-Path -LiteralPath $source)) {
-        throw @"
-Windows build needs the original SyncHub icon. This repository does not contain it, and the build will not substitute the system icon.
-Pass -AppIcon <path> or set SYNCHUB_APP_ICON to the existing app_icon.ico.
-Expected size $expectedIconBytes bytes and SHA256 $expectedIconSha.
-"@
-    }
-    $item = Get-Item -LiteralPath $source -Force
-    if ($item.PSIsContainer -or ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
-        throw "Refusing app icon path. It must be the original file, not a directory or a link: $source"
-    }
-    if ($item.Length -ne $expectedIconBytes) {
-        throw "Refusing app icon. Size is $($item.Length), expected $expectedIconBytes bytes. The system icon will not be used instead."
-    }
-    $sha = [System.Security.Cryptography.SHA256]::Create()
-    $stream = [System.IO.File]::Open($item.FullName, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
-    try {
-        $actual = ([System.BitConverter]::ToString($sha.ComputeHash($stream))).Replace("-", "")
-    } finally {
-        $stream.Dispose()
-        $sha.Dispose()
-    }
-    if ($actual -ne $expectedIconSha) {
-        throw "Refusing app icon. SHA256 $actual does not match the original SyncHub icon $expectedIconSha."
-    }
+    if ([string]::IsNullOrWhiteSpace($source)) { $source = $dest }
+    Assert-WindowsIconFile $source
     $destFull = [System.IO.Path]::GetFullPath($dest)
     $resources = [System.IO.Path]::GetFullPath((Join-Path $app "windows\runner\resources"))
     if (-not $resources.EndsWith("\")) { $resources = $resources + "\" }
@@ -74,8 +74,10 @@ Expected size $expectedIconBytes bytes and SHA256 $expectedIconSha.
         throw "Refusing to copy the icon outside windows\runner\resources."
     }
     New-Item -ItemType Directory -Force -Path $resources | Out-Null
-    if (-not [string]::Equals($item.FullName, $destFull, [System.StringComparison]::OrdinalIgnoreCase)) {
-        [System.IO.File]::Copy($item.FullName, $destFull, $true)
+    $sourceFull = [System.IO.Path]::GetFullPath($source)
+    if (-not [string]::Equals($sourceFull, $destFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+        [System.IO.File]::Copy($sourceFull, $destFull, $true)
+        Assert-WindowsIconFile $destFull
     }
     return $destFull
 }

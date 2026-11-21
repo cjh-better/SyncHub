@@ -2,7 +2,7 @@
 
 ## 1.1.4+10
 
-- Windows 窗口和托盘改回编译进程序的 `app_icon.ico`。仓库里没有这份原图标，构建不会再改用系统图标。`build_app.ps1 -AppIcon` 或 `SYNCHUB_APP_ICON` 必须指向 33772 字节、SHA256 为 `C098D3FC85CACFF98B8E69811B48E9F0D852FCEE278132D794411D978869CBF8` 的原文件，校验通过后才复制进资源脚本。
+- Windows 窗口、任务栏和托盘使用项目自带的 `app/windows/runner/resources/app_icon.ico`。这是用户提供的原图标，33772 字节。默认构建直接编译这份文件，不再改用系统图标。`-AppIcon` 仍可换另一份合法 ICO，只检查文件和图标头，不把原图标哈希写成永久限制。
 
 ## 1.1.3+9
 

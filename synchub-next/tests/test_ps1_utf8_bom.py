@@ -1,5 +1,7 @@
 """Windows PowerShell 5.1 reads -File as ANSI unless the script has a UTF-8 BOM."""
 
+import hashlib
+import struct
 import unittest
 from pathlib import Path
 
@@ -55,20 +57,40 @@ class Ps1EncodingTest(unittest.TestCase):
         self.assertIn("preservedOtherDlls", text)
         self.assertNotIn("*.dll", text)
 
-    def test_windows_build_requires_original_icon(self):
+    def test_windows_build_uses_repo_icon_without_a_fixed_hash_lock(self):
         text = (ROOT / "scripts" / "build_app.ps1").read_text(encoding="utf-8-sig")
         self.assertIn("-AppIcon", text)
         self.assertIn("SYNCHUB_APP_ICON", text)
-        self.assertIn("C098D3FC85CACFF98B8E69811B48E9F0D852FCEE278132D794411D978869CBF8", text)
-        self.assertIn("33772", text)
+        self.assertIn("resources\\app_icon.ico", text)
         self.assertIn("will not substitute the system icon", text)
+        self.assertIn("not an ICO", text)
+        self.assertNotIn("does not match the original SyncHub icon", text)
         rc = (ROOT / "app" / "windows" / "runner" / "Runner.rc").read_text(encoding="utf-8")
         self.assertIn('IDI_APP_ICON            ICON                    "resources\\\\app_icon.ico"', rc)
         self.assertNotIn("IDI_APPLICATION", rc)
         for name in ("flutter_window.cpp", "win32_window.cpp"):
             cpp = (ROOT / "app" / "windows" / "runner" / name).read_text(encoding="utf-8")
             self.assertNotIn("IDI_APPLICATION", cpp)
-        self.assertFalse((ROOT / "app" / "windows" / "runner" / "resources" / "app_icon.ico").exists())
+            self.assertIn("IDI_APP_ICON", cpp)
+
+    def test_committed_app_icon_is_the_original_project_ico(self):
+        icon = ROOT / "app" / "windows" / "runner" / "resources" / "app_icon.ico"
+        data = icon.read_bytes()
+        self.assertEqual(len(data), 33772)
+        self.assertEqual(
+            hashlib.sha256(data).hexdigest(),
+            "c098d3fc85cacff98b8e69811b48e9f0d852fcee278132d794411d978869cbf8",
+        )
+        reserved, kind, count = struct.unpack_from("<HHH", data, 0)
+        self.assertEqual(reserved, 0)
+        self.assertEqual(kind, 1)
+        self.assertGreaterEqual(count, 1)
+        self.assertGreaterEqual(len(data), 6 + count * 16)
+        for index in range(count):
+            size, offset = struct.unpack_from("<II", data, 6 + index * 16 + 8)
+            self.assertGreater(size, 0)
+            self.assertGreaterEqual(offset, 6 + count * 16)
+            self.assertLessEqual(offset + size, len(data))
 
 
 if __name__ == "__main__":
