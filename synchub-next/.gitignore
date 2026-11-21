@@ -1,0 +1,7 @@
+.p0test/
+.p0_run.log
+server/gateway/bin/
+server/gateway/dist/
+server/gateway/data/
+*.part
+__pycache__/

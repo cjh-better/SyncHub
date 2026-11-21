@@ -3,7 +3,7 @@
 SyncHub 是在 [SyncClipboard](https://github.com/Jeric-X/SyncClipboard) 基础上扩展的跨端剪贴板与文件传输方案：
 
 - **服务端**：官方 SyncClipboard 服务器（Docker）+ `synchub_server.py`，共用同一个 `history.db`，提供兼容 SyncClipboard v3 协议的剪贴板同步，以及「跨端传输中心」Web 界面（类 macOS 浅色扁平风格，`/hub/`）：大文件流式上传、分类、收藏、置顶、批量删除、3 天自动清理。
-- **Windows 客户端**：SyncClipboard 官方客户端 + 右键「发送到跨端传输」与后台自动接收。
+- **Windows 客户端**：新的 Flutter SyncHub 在 `synchub-next/`（当前 1.1.2+8）。它保留文字、图片、文件剪贴板和文件收发，并在确认后只留一个 SyncHub 托盘。旧的 Python 接收器仍在 `02_Windows客户端与右键套件/`，安装说明见 [synchub-next/WINDOWS_SINGLE_TRAY.md](synchub-next/WINDOWS_SINGLE_TRAY.md)。
 - **macOS 客户端**：Swift 菜单栏 App，剪贴板自动双向同步、Finder 右键发送、文件自动落盘到桌面 `跨端传输文件`。
 - **Android 客户端**：Kotlin + Compose，需 Root；同时是 LSPosed 模块（Hook 不可用时回退到 Root 模式），剪贴板双向同步与文件自动接收。
 

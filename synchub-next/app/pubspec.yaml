@@ -1,0 +1,30 @@
+name: synchub
+description: "SyncHub Cross-Platform File & Clipboard Transfer (Blip-style P2P + Cloud + SyncClipboard)"
+publish_to: 'none'
+version: 1.1.2+8
+
+environment:
+  sdk: ">=3.8.0 <4.0.0"
+
+dependencies:
+  crypto: ^3.0.8
+  cryptography: ^2.9.0
+  desktop_drop: ^0.8.4
+  file_picker: ^13.3.3
+  flutter:
+    sdk: flutter
+  flutter_webrtc: ^1.6.3
+  multicast_dns: ^0.3.3+1
+  path: ^1.9.1
+  path_provider: ^2.1.6
+  shared_preferences: ^2.5.6
+  uuid: ^4.6.0
+  web_socket_channel: ^3.0.3
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true

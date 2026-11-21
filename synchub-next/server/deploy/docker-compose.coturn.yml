@@ -1,0 +1,28 @@
+# coturn：为 P2 的 WebRTC 打洞提供 STUN/TURN。
+# 部署：docker compose -f docker-compose.coturn.yml up -d
+# 防火墙放行：3478/udp、3478/tcp、49160-49200/udp
+services:
+  coturn:
+    image: coturn/coturn:4.6
+    container_name: synchub-coturn
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - -n
+      - --log-file=stdout
+      - --listening-port=3478
+      - --min-port=49160
+      - --max-port=49200
+      - --realm=020814.xyz
+      - --use-auth-secret
+      - --static-auth-secret=${GATEWAY_TURN_SECRET:?set GATEWAY_TURN_SECRET}
+      - --no-cli
+      - --no-multicast-peers
+      - --no-tlsv1
+      - --no-tlsv1_1
+      - --denied-peer-ip=10.0.0.0-10.255.255.255
+      - --denied-peer-ip=172.16.0.0-172.31.255.255
+      - --denied-peer-ip=192.168.0.0-192.168.255.255
+      - --denied-peer-ip=127.0.0.0-127.255.255.255
+      - --total-quota=50
+      - --user-quota=10
